@@ -1,0 +1,7 @@
+This product includes source code developed by the author (src/, tests/,
+docs/) licensed under the MIT License (see LICENSE).
+
+tests/Iec103.Tests/Oracle/ArIEC103/ contains vendored source code from
+ArIEC103 (https://github.com/masarray/ARIEC103), licensed under
+Apache-2.0. It is used solely as an interoperability oracle in the test
+suite. See Tests/Oracle/ArIEC103/LICENSE and NOTICE in that directory.

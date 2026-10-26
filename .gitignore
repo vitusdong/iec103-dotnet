@@ -1,0 +1,16 @@
+## .NET
+bin/
+obj/
+*.user
+*.suo
+.vs/
+.vscode/
+.idea/
+TestResults/
+*.binlog
+artifacts/
+nupkg/
+
+## OS
+Thumbs.db
+.DS_Store

@@ -1,0 +1,49 @@
+{
+  "stations": [
+    {
+      "address": 1,
+      "name": "保护装置A（模拟）",
+      "compatIdent": "TEST-103",
+      "privateIdent": "PROT-A01",
+      "points": [
+        { "fun": 160, "inf": 1, "dpi": 2, "description": "断路器合位" },
+        { "fun": 160, "inf": 2, "dpi": 1, "description": "隔离刀闸分位" },
+        { "fun": 160, "inf": 3, "dpi": 0, "description": "接地刀闸（不确定）" },
+        { "fun": 161, "inf": 1, "dpi": 2, "description": "保护动作信号" },
+        { "fun": 161, "inf": 2, "dpi": 1, "description": "重合闸动作信号" },
+        { "fun": 128, "inf": 20, "dpi": 2, "description": "装置位置指示（兼容范围）" }
+      ],
+      "genericEntries": [
+        { "group": 1, "entry": 1, "description": "断路器位置", "dataType": "uint", "actualValue": 2, "intWidth": 1 },
+        { "group": 1, "entry": 2, "description": "保护定值 I>", "dataType": "float", "actualValue": 5.0, "minValue": 0.5, "maxValue": 100.0, "stepValue": 0.1 },
+        { "group": 2, "entry": 1, "description": "装置名称", "dataType": "ascii", "asciiValue": "RELAY-A" },
+        { "group": 2, "entry": 2, "description": "软件版本", "dataType": "ascii", "asciiValue": "V1.2.3", "readOnly": true }
+      ],
+      "measurements": [
+        { "fun": 1, "inf": 1, "value": 5725, "description": "Ia 电流" },
+        { "fun": 1, "inf": 2, "value": -123, "description": "Ua 电压" }
+      ],
+      "disturbances": [
+        {
+          "fan": 1,
+          "faultTime": "2026-10-17T09:30:15.5",
+          "sampleIntervalUs": 1000,
+          "channels": [
+            { "acc": 1, "primary": 600.0, "secondary": 5.0, "factor": 120.0, "sampleCount": 250, "amplitude": 0.3, "faultStartIndex": 100, "faultAmplitude": 0.9 },
+            { "acc": 2, "primary": 600.0, "secondary": 5.0, "factor": 120.0, "sampleCount": 250, "amplitude": 0.3, "faultStartIndex": 100, "faultAmplitude": 0.85 },
+            { "acc": 4, "primary": 100.0, "secondary": 5.0, "factor": 20.0, "sampleCount": 250, "amplitude": 0.1, "faultStartIndex": 0, "faultAmplitude": 0.1 }
+          ]
+        }
+      ]
+    },
+    {
+      "address": 2,
+      "name": "保护装置B（模拟）",
+      "compatIdent": "TEST-103",
+      "privateIdent": "PROT-B01",
+      "points": [
+        { "fun": 160, "inf": 1, "dpi": 1, "description": "断路器分位" }
+      ]
+    }
+  ]
+}
