@@ -1,0 +1,32 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - run: dotnet restore
+      - run: dotnet build --no-restore -c Release
+      - run: dotnet test --no-build -c Release
+      - name: Pack
+        run: dotnet pack src/Iec103/Iec103.csproj -c Release --no-build -o artifacts
+      - name: Publish to NuGet.org
+        if: ${{ secrets.NUGET_API_KEY != '' }}
+        run: dotnet nuget push artifacts/*.nupkg
+             --source https://api.nuget.org/v3/index.json
+             --api-key ${{ secrets.NUGET_API_KEY }}
+             --skip-duplicate
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*.nupkg
+          generate_release_notes: true
