@@ -93,7 +93,9 @@ public static class Acc103
 }
 
 /// <summary>
-/// 故障状态字节 SOF：bit7 TP 保护跳闸、bit6 TM 跳闸命令、bit5 TEST 试验、bit4 OTEV 事件由装置启动。
+/// 故障状态字节 SOF（IEC 60870-5-103 7.2.6.24）：bit1 TP 带跳闸的故障记录、bit2 TM 扰动数据正在传输、
+/// bit3 TEST 测试模式下记录、bit4 OTEV 由保护启动以外的其他事件触发记录；bit5-8 备用。
+/// 属性对应：TripProtection=TP、TripCommand=TM、Test=TEST、EquipmentStart=OTEV。
 /// </summary>
 public readonly record struct Sof103(bool TripProtection, bool TripCommand, bool Test, bool EquipmentStart)
 {
@@ -102,32 +104,32 @@ public readonly record struct Sof103(bool TripProtection, bool TripCommand, bool
         var value = (byte)0;
         if (TripProtection)
         {
-            value |= 0x80;
+            value |= 0x01;
         }
 
         if (TripCommand)
         {
-            value |= 0x40;
+            value |= 0x02;
         }
 
         if (Test)
         {
-            value |= 0x20;
+            value |= 0x04;
         }
 
         if (EquipmentStart)
         {
-            value |= 0x10;
+            value |= 0x08;
         }
 
         return value;
     }
 
     public static Sof103 Decode(byte value) => new(
-        TripProtection: (value & 0x80) != 0,
-        TripCommand: (value & 0x40) != 0,
-        Test: (value & 0x20) != 0,
-        EquipmentStart: (value & 0x10) != 0);
+        TripProtection: (value & 0x01) != 0,
+        TripCommand: (value & 0x02) != 0,
+        Test: (value & 0x04) != 0,
+        EquipmentStart: (value & 0x08) != 0);
 }
 
 /// <summary>

@@ -47,7 +47,11 @@ public class Iec103DisturbanceTests
     {
         var sof = new Sof103(TripProtection: true, TripCommand: false, Test: true, EquipmentStart: true);
         Assert.Equal(sof, Sof103.Decode(sof.Encode()));
-        Assert.Equal(0xB0, sof.Encode());
+        // 7.2.6.24：TP=bit1、TM=bit2、TEST=bit3、OTEV=bit4
+        Assert.Equal(0x0D, sof.Encode());
+        Assert.True(Sof103.Decode(0x01).TripProtection);
+        Assert.Equal(new Sof103(false, true, false, false), Sof103.Decode(0x02));
+        Assert.Equal(new Sof103(false, false, false, false), Sof103.Decode(0xF0)); // RES 位忽略
 
         var time = new Cp32Time2a103(53992, 50, 9, Invalid: false, SummerTime: false);
         Assert.Equal([0xE8, 0xD2, 0x32, 0x09], time.Encode());
@@ -67,7 +71,7 @@ public class Iec103DisturbanceTests
         Assert.Equal(Cot103.DisturbanceTransfer, asdu.Cot);
         Assert.Equal(10, asdu.Data.Length);
         Assert.Equal(7, asdu.Data[0] | (asdu.Data[1] << 8)); // FAN=7
-        Assert.Equal(0xD0, asdu.Data[2]); // SOF: TP+TM+OTEV（记录默认状态）
+        Assert.Equal(0x0B, asdu.Data[2]); // SOF: TP+TM+OTEV（记录默认状态）
         var entries = DisturbanceAsdu.DecodeDisturbanceList(asdu);
         Assert.Single(entries);
         Assert.Equal(7, entries[0].Fan);
