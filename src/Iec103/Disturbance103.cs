@@ -367,7 +367,7 @@ public static class DisturbanceAsdu
         data[3] = (byte)(fan >> 8);
         data[4] = acc;
         data[5] = (byte)count;
-        var nfe = (ushort)(offset + 1); // 元素序号从 1 起
+        var nfe = (ushort)offset; // 7.2.6.9：NFE <0..65535>，首个扰动值为 0 号（与 TAP 的位置 0 一致）
         data[6] = (byte)(nfe & 0xFF);
         data[7] = (byte)(nfe >> 8);
         for (var i = 0; i < count; i++)

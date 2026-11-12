@@ -496,7 +496,7 @@ public sealed class Iec103Client : IDisposable
             var samples = new short[sampleCount];
             foreach (var segment in segments)
             {
-                var startIndex = segment.FirstElement - 1;
+                var startIndex = segment.FirstElement; // NFE 从 0 起（7.2.6.9）
                 if (startIndex < 0 || startIndex + segment.Values.Length > samples.Length)
                 {
                     throw new FormatException(

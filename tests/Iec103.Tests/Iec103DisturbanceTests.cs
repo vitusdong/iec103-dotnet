@@ -92,7 +92,9 @@ public class Iec103DisturbanceTests
         var segment = DisturbanceAsdu.DecodeChannelData(asdu);
         Assert.Equal(5, segment.Fan);
         Assert.Equal(2, segment.Acc);
-        Assert.Equal(21, segment.FirstElement); // 首元素序号 = 偏移+1
+        Assert.Equal(20, segment.FirstElement); // 首元素序号 = 偏移（NFE 从 0 起，7.2.6.9）
+        Assert.Equal(0, DisturbanceAsdu.DecodeChannelData(
+            DisturbanceAsdu.ChannelData(1, Too103.RequestChannel, fan: 5, acc: 2, samples, offset: 0, count: 5)).FirstElement);
         Assert.Equal(samples[20..25], segment.Values);
     }
 

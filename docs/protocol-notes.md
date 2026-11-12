@@ -69,7 +69,7 @@
 | 26 | 传输准备就绪 | TOO+TOV+FAN+NOF(2)+NOC(1)+NOE(2)+INT(2µs)+CP32(4) |
 | 27 | 通道一次值 | TOO+TOV+FAN+ACC+RPV(4f)+RSV(4f)+RFA(4f) |
 | 29 | 扰动标签 | FAN+NOT(1)+TAP(2)+NOT×[FUN+INF+DPI] |
-| 30 | 通道扰动数据段 | TOO+TOV+FAN+ACC+NDV(1)+NFE(2)+NDV×int16(归一化) |
+| 30 | 通道扰动数据段 | TOO+TOV+FAN+ACC+NDV(1)+NFE(2，首个扰动值为 0 号)+NDV×int16(归一化) |
 | 31 | 通道/扰动传输终止 | TOO+TOV+FAN+ACC（TOO=35 通道结束、32 扰动结束） |
 
 关键枚举：KOD（1 实际值/2 缺省/3 量程/**10 描述**）、GDD 类型（1 ASCII/3 UI/4 I/7 R32.23 float/22 回复码/23 结构）、TOO（1 选故障/2 请求数据/8 请求通道/16 请求标签/24 请求扰动表/32/35/38 结束/64/65 认可）、NGD（数目 bit2-7|后续 bit0）、GDD（类型+宽度+数量 bit1-7|连续 bit0）。
