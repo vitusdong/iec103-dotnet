@@ -715,6 +715,8 @@ public sealed class Iec103Server : IDisposable
             }
 
             var record = disturbances.FirstOrDefault(r => r.Fan == fan);
+            // ASDU 23 的 FUN 取装置功能类型；未配置（255）时沿用命令的 FUN
+            var listFun = station.FunctionType != Asdu103.GlobalFun ? (byte)station.FunctionType : asdu.Fun;
             switch (too)
             {
                 case Too103.RequestDisturbanceList:
@@ -723,13 +725,13 @@ public sealed class Iec103Server : IDisposable
                     for (var offset = 0; offset < disturbanceCount; offset += listChunkSize)
                     {
                         var chunk = disturbances.Skip(offset).Take(listChunkSize).ToList();
-                        EnqueueClass1(DisturbanceAsdu.DisturbanceList(ca, chunk));
+                        EnqueueClass1(DisturbanceAsdu.DisturbanceList(ca, chunk, listFun));
                     }
 
                     if (disturbanceCount == 0)
                     {
                         // 空表也回一帧 VSQ=0，客户端据此得知无扰动
-                        EnqueueClass1(DisturbanceAsdu.DisturbanceList(ca, []));
+                        EnqueueClass1(DisturbanceAsdu.DisturbanceList(ca, [], listFun));
                     }
 
                     _log($"扰动表请求 → {disturbanceCount} 条记录（{(disturbanceCount + listChunkSize - 1) / listChunkSize} 帧）");

@@ -59,9 +59,11 @@ public class Iec103DisturbanceTests
     public void 扰动表ASDU23编码含FAN_SOF_CP56()
     {
         var station = BuildStation();
-        var asdu = DisturbanceAsdu.DisturbanceList(1, station.Disturbances);
+        var asdu = DisturbanceAsdu.DisturbanceList(1, station.Disturbances, fun: 160);
         Assert.Equal(TypeId103.DisturbanceList, asdu.TypeId);
         Assert.Equal(1, asdu.Count); // VSQ 数量 = 记录数（3 是通道数）
+        // 7.3.1.11：VSQ 的 SQ=0（0x01），FUN=装置功能类型，INF=0
+        Assert.Equal(Hex("17 01 1F 01 A0 00"), asdu.Encode()[..6]);
         Assert.Equal(Cot103.DisturbanceTransfer, asdu.Cot);
         Assert.Equal(10, asdu.Data.Length);
         Assert.Equal(7, asdu.Data[0] | (asdu.Data[1] << 8)); // FAN=7
@@ -140,6 +142,23 @@ public class Iec103DisturbanceTests
         Assert.Equal(100f, neutral.Primary);
         Assert.Equal(20f, neutral.Factor);
         Assert.All(neutral.Samples, s => Assert.True(Math.Abs(s) <= 0.15 * 32767));
+    }
+
+    [Fact]
+    public void 扰动自环_扰动表FUN为装置功能类型且SQ为0()
+    {
+        var station = BuildStation();
+        station.FunctionType = 160;
+        using var loopback = new Loopback(station).Start();
+        var client = loopback.Client;
+        client.ResetLink(1);
+
+        client.RequestDisturbanceList(1);
+        var list = client.GetReceivedSnapshot().Select(r => r.Asdu).Single(a => a.TypeId == TypeId103.DisturbanceList);
+        Assert.False(list.Sq);
+        Assert.Equal(1, list.Count);
+        Assert.Equal(160, list.Fun);
+        Assert.Equal(0, list.Inf);
     }
 
     /// <summary>最小自环容器。</summary>

@@ -64,7 +64,7 @@
 | 11 | 通用分类标识 | RII+GIN+NDE+描述元素 |
 | 20 | 一般命令 | DCO(bit6-7)+RII，COT=20；从站以 TI=1 COT=20/21（SIN=RII）确认，状态变化以 TI=1 COT=12 上送 |
 | 21 | 通用分类读命令 | RII+NOG+N×[GIN+KOD]，COT=42；全目录=GIN 0000+KOD=10 |
-| 23 | 被记录扰动表 | N×[FAN(2)+SOF(1)+CP56(7)] |
+| 23 | 被记录扰动表 | VSQ：SQ=0+记录数；FUN=装置功能类型；N×[FAN(2)+SOF(1)+CP56(7)]（7.3.1.11） |
 | 24/25 | 扰动命令/认可 | TOO(1)+TOV(1)+FAN(2)+ACC(1) |
 | 26 | 传输准备就绪 | TOO+TOV+FAN+NOF(2)+NOC(1)+NOE(2)+INT(2µs)+CP32(4) |
 | 27 | 通道一次值 | TOO+TOV+FAN+ACC+RPV(4f)+RSV(4f)+RFA(4f) |

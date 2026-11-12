@@ -264,8 +264,11 @@ public sealed class DisturbanceRecord103Model
 /// <summary>扰动 ASDU 数据段编码（数据区位于 FUN/INF 之后；FUN=255、COT=31）。</summary>
 public static class DisturbanceAsdu
 {
-    /// <summary>ASDU 23 被记录的扰动表：每条 FAN(2)+SOF(1)+CP56(7)，VSQ 记录数。</summary>
-    public static Asdu103 DisturbanceList(byte ca, IReadOnlyList<DisturbanceRecord103Model> records)
+    /// <summary>
+    /// ASDU 23 被记录的扰动表（IEC 60870-5-103 7.3.1.11）：每条 FAN(2)+SOF(1)+CP56(7)，
+    /// VSQ 的 SQ=0、数目 = 记录数；FUN 为装置功能类型，INF 不用（0）。
+    /// </summary>
+    public static Asdu103 DisturbanceList(byte ca, IReadOnlyList<DisturbanceRecord103Model> records, byte fun = Asdu103.GlobalFun)
     {
         var data = new byte[records.Count * 10];
         var offset = 0;
@@ -279,7 +282,7 @@ public static class DisturbanceAsdu
             offset += 7;
         }
 
-        return new Asdu103(TypeId103.DisturbanceList, true, records.Count, Cot103.DisturbanceTransfer, false, ca, Asdu103.GlobalFun, 0, data);
+        return new Asdu103(TypeId103.DisturbanceList, false, records.Count, Cot103.DisturbanceTransfer, false, ca, fun, 0, data);
     }
 
     /// <summary>ASDU 24/25：TOO(1)+TOV(1)+FAN(2)+ACC(1)。</summary>
