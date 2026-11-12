@@ -87,7 +87,7 @@ public static class TypeId103
 /// 103 传输原因（COT，1 字节，bit7 为 P/N 否定位）。
 /// 与 101/104 在 3 之后分道（103 专有表，ARIEC103 与 Wireshark dissector 双源核对）：
 /// 3=复位FCB、4=复位CU（ZLG 标识报文 COT=4 实测吻合）、5=启动/重启、8=时间同步、
-/// 9=总召唤启动、10=终止、11/12=远方/当地操作（亦作命令返送）、20/21=命令肯定/否定确认、
+/// 9=总召唤启动、10=终止、11/12=当地/远方操作（12 亦作命令引起的状态变化）、20/21=命令肯定/否定确认、
 /// 40-44=通用分类系列。
 /// 总召唤数据点回送 COT=9（7.4.3：COT = 总召唤），SIN 为扫描序号。
 /// </summary>
@@ -103,8 +103,11 @@ public static class Cot103
     public const byte ClockSync = 8;
     public const byte GiStart = 9;
     public const byte GiStop = 10;
-    public const byte RemoteOperation = 11;
-    public const byte LocalOperation = 12;
+    /// <summary>当地操作（IEC 60870-5-103 表 5：11）。</summary>
+    public const byte LocalOperation = 11;
+
+    /// <summary>远方操作（IEC 60870-5-103 表 5：12）：一般命令引起的状态变化以此 COT 上送（7.4.4）。</summary>
+    public const byte RemoteOperation = 12;
     public const byte CommandAck = 20;
     public const byte CommandNack = 21;
     public const byte DisturbanceTransfer = 31;
@@ -460,6 +463,7 @@ public sealed record Asdu103(byte TypeId, bool Sq, int Count, byte Cot, bool Neg
 
     /// <summary>
     /// 一般命令（TI=20，COT=20）：FUN/INF 指定目标，数据 = DCO+RII。
+    /// 从站以 ASDU 1 COT=20/21（SIN=RII）确认，命令引起的状态变化以 ASDU 1 COT=12 上送（7.4.4）。
     /// DCO 按 DL/T 667：bit0-1 命令值 DCT（01 分/10 合/11 不确定；00 兼容单点 SCS OFF=分），
     /// bit6-7 限定词 QU（0 默认）。
     /// </summary>

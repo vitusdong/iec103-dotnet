@@ -81,11 +81,57 @@ public class Iec103MinorTests
         Assert.Equal((byte)SecondaryFunction103.Ack, LinkControl103.FromByte(ack.Control).Function);
 
         var echo = DrainFirstAsdu(client, TypeId103.TimeTaggedMessage);
-        Assert.Equal(Cot103.RemoteOperation, echo.Cot);
+        Assert.Equal(Cot103.CommandAck, echo.Cot);
         Assert.False(echo.Negative);
         Assert.Equal(160, echo.Fun);
         Assert.Equal(1, echo.Inf);
         Assert.Equal(expectedDpi, echo.Data[0] & 0x03);
+    }
+
+    [Fact]
+    public void 自环_一般命令以COT20加RII确认后以COT12上送状态变化()
+    {
+        using var loopback = new Loopback(BuildStation()).Start();
+        var client = loopback.Client;
+        client.ResetLink(1);
+        client.RequestClass1(1);
+        client.RequestClass1(1);
+
+        // 7.4.4：确认（ASDU 1，COT=20，SIN=RII），随后状态变化（ASDU 1，COT=12 远方操作）
+        client.SendConfirmed(1, Asdu103.GeneralCommand(1, fun: 160, inf: 1, dco: 1, rii: 42));
+        var ack = DrainFirstAsdu(client, TypeId103.TimeTaggedMessage);
+        Assert.Equal(Cot103.CommandAck, ack.Cot);
+        Assert.Equal(20, ack.Cot);
+        Assert.False(ack.Negative);
+        Assert.Equal((160, 1), ((int)ack.Fun, (int)ack.Inf));
+        Assert.Equal(6, ack.Data.Length);
+        Assert.Equal(42, ack.Data[5]);
+
+        var change = DrainFirstAsdu(client, TypeId103.TimeTaggedMessage);
+        Assert.Equal(Cot103.RemoteOperation, change.Cot);
+        Assert.Equal(12, change.Cot);
+        Assert.Equal((160, 1), ((int)change.Fun, (int)change.Inf));
+        Assert.Equal(1, change.Data[0] & 0x03); // 分
+    }
+
+    [Fact]
+    public void 自环_不接受命令的点位回否定确认且状态不变()
+    {
+        var station = BuildStation();
+        station.Points[0].AcceptsCommands = false;
+        using var loopback = new Loopback(station).Start();
+        var client = loopback.Client;
+        client.ResetLink(1);
+        client.RequestClass1(1);
+        client.RequestClass1(1);
+
+        client.SendConfirmed(1, Asdu103.GeneralCommand(1, fun: 160, inf: 1, dco: 1, rii: 4));
+        var nack = DrainFirstAsdu(client, TypeId103.TimeTaggedMessage);
+        Assert.Equal(Cot103.CommandNack, nack.Cot);
+        Assert.Equal(4, nack.Data[5]);
+        Assert.Equal(2, station.Points[0].Dpi);
+        var empty = client.RequestClass1(1);
+        Assert.Equal((byte)SecondaryFunction103.RespondNoData, LinkControl103.FromByte(empty.Control).Function);
     }
 
     [Fact]
@@ -97,14 +143,14 @@ public class Iec103MinorTests
         client.RequestClass1(1);
         client.RequestClass1(1);
 
-        // GPGate 实测帧 ASDU：TI=20 VSQ=1 COT=12(当地操作) CA=1 FUN=160 INF=1 DCO=0x02（无 RII）
+        // GPGate 实测帧 ASDU：TI=20 VSQ=1 COT=12 CA=1 FUN=160 INF=1 DCO=0x02（无 RII）
         var frame = client.SendConfirmed(1,
-            new Asdu103(TypeId103.GeneralCommand, true, 1, Cot103.LocalOperation, false, 1, 160, 1, [0x02]));
+            new Asdu103(TypeId103.GeneralCommand, true, 1, 12, false, 1, 160, 1, [0x02]));
         Assert.Equal((byte)SecondaryFunction103.Ack, LinkControl103.FromByte(frame.Control).Function);
 
         var echo = DrainFirstAsdu(client, TypeId103.TimeTaggedMessage);
         Assert.False(echo.Negative);
-        Assert.Equal(Cot103.RemoteOperation, echo.Cot);
+        Assert.Equal(Cot103.CommandAck, echo.Cot);
         Assert.Equal(2, echo.Data[0] & 0x03); // DCO bit0-1=10 → 合
     }
 
@@ -128,7 +174,7 @@ public class Iec103MinorTests
     }
 
     [Fact]
-    public void 自环_一般命令不确定值3回否定返送()
+    public void 自环_一般命令不确定值3回否定确认()
     {
         using var loopback = new Loopback(BuildStation()).Start();
         var client = loopback.Client;
@@ -140,12 +186,12 @@ public class Iec103MinorTests
         Assert.Equal((byte)SecondaryFunction103.Ack, LinkControl103.FromByte(ack.Control).Function); // 链路仍 ACK
 
         var echo = DrainFirstAsdu(client, TypeId103.TimeTaggedMessage);
-        Assert.True(echo.Negative);
-        Assert.Equal(Cot103.RemoteOperation, echo.Cot);
+        Assert.False(echo.Negative);
+        Assert.Equal(Cot103.CommandNack, echo.Cot);
     }
 
     [Fact]
-    public void 自环_一般命令未知点位回否定返送()
+    public void 自环_一般命令未知点位回否定确认()
     {
         using var loopback = new Loopback(BuildStation()).Start();
         var client = loopback.Client;
@@ -156,8 +202,8 @@ public class Iec103MinorTests
         client.SendGeneralCommand(1, fun: 200, inf: 99, dco: 2);
 
         var echo = DrainFirstAsdu(client, TypeId103.TimeTaggedMessage);
-        Assert.True(echo.Negative);
-        Assert.Equal(Cot103.RemoteOperation, echo.Cot);
+        Assert.False(echo.Negative);
+        Assert.Equal(Cot103.CommandNack, echo.Cot);
     }
 
     [Fact]

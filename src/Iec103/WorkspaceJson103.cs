@@ -15,6 +15,9 @@ public sealed class Iec103PointModel
     /// <summary>当前双点状态：0 不确定、1 分、2 合。</summary>
     public int Dpi { get; set; }
 
+    /// <summary>是否接受同 FUN/INF 的一般命令（TI=20）；false 时命令回否定确认（COT=21）。</summary>
+    public bool AcceptsCommands { get; set; } = true;
+
     public string Description { get; set; } = string.Empty;
 }
 

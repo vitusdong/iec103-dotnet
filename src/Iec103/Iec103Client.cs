@@ -485,7 +485,7 @@ public sealed class Iec103Client : IDisposable
 
     /// <summary>
     /// 一般命令（TI=20）：FUN/INF 目标 + DCO（1 分/2 合）。返回链路确认帧；
-    /// 命令返送（TI=1，COT=远方操作）经 1 级召唤收取。
+    /// 命令确认（TI=1，COT=20/21）与状态变化（TI=1，COT=12 远方操作）经 1 级召唤收取。
     /// </summary>
     public Frame103 SendGeneralCommand(byte address, byte fun, byte inf, int dco)
     {

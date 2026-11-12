@@ -793,25 +793,27 @@ public sealed class Iec103Server : IDisposable
             var point = station.Points.FirstOrDefault(p => p.Fun == asdu.Fun && p.Inf == asdu.Inf);
 
             // 命令值映射（DL/T 667 DCT）：1=分、2=合；0 兼容单点 SCS OFF=分；3=不确定不执行
-            if (point is null || dct == 3)
+            if (point is null || !point.AcceptsCommands || dct == 3)
             {
-                // 未匹配或命令值不确定：负确认（TI=1，COT=远方操作，P/N=1）
-                var negative = Asdu103.TimeTaggedMessage(
-                    ca, asdu.Fun, asdu.Inf, DpiQuality103.FromDpi(0),
-                    Cp56Time2a103.FromDateTime(StationNow), Cot103.RemoteOperation);
-                EnqueueClass1(negative with { Negative = true });
+                // 7.4.4：不能执行的命令以否定确认拒绝（TI=1，COT=21，SIN=RII；DPI 无意义）
+                EnqueueClass1(Asdu103.TimeTaggedMessage(
+                    ca, asdu.Fun, asdu.Inf, DpiQuality103.FromDpi(point?.Dpi ?? 0),
+                    Cp56Time2a103.FromDateTime(StationNow), Cot103.CommandNack, rii));
                 _log($"⚠ 一般命令拒绝：FUN={asdu.Fun} INF={asdu.Inf} DCT={dct} QU={qu} RII={rii}" +
-                    (point is null ? "（点位不在模拟点表）" : "（命令值 3=不确定）") +
-                    "；链路仍回 ACK——GPGate 类网关将判成功，值未变化");
+                    (point is null ? "（点位不在模拟点表）" : point.AcceptsCommands ? "（命令值 3=不确定）" : "（点位不接受命令）") +
+                    "，否定确认（COT=21）已入 1 级队列");
                 return true;
             }
 
             point.Dpi = dct is 1 or 0 ? 1 : 2;
+            var now = Cp56Time2a103.FromDateTime(StationNow);
+            // 7.4.4：先肯定确认（TI=1，COT=20，SIN=RII），再上送命令引起的状态变化（TI=1，COT=12 远方操作）
             EnqueueClass1(Asdu103.TimeTaggedMessage(
-                ca, (byte)point.Fun, (byte)point.Inf, DpiQuality103.FromDpi(point.Dpi),
-                Cp56Time2a103.FromDateTime(StationNow), Cot103.RemoteOperation));
+                ca, (byte)point.Fun, (byte)point.Inf, DpiQuality103.FromDpi(point.Dpi), now, Cot103.CommandAck, rii));
+            EnqueueClass1(Asdu103.TimeTaggedMessage(
+                ca, (byte)point.Fun, (byte)point.Inf, DpiQuality103.FromDpi(point.Dpi), now, Cot103.RemoteOperation));
             _log($"ACK command applied FUN={point.Fun}, INF={point.Inf}, DPI={point.Dpi}" +
-                $"（{(point.Dpi == 1 ? "分/OFF" : "合/ON")}，QU={qu} RII={rii}），返送已入 1 级队列");
+                $"（{(point.Dpi == 1 ? "分/OFF" : "合/ON")}，QU={qu} RII={rii}），肯定确认与状态变化已入 1 级队列");
             return true;
         }
 
