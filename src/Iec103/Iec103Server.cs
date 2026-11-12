@@ -12,7 +12,7 @@ public sealed record FrameTrace(bool Sent, string Hex);
 /// 非平衡式：仅响应主站链路服务。
 /// 复位（RESET CU）→ 清 1 级队列并入队兼容/专用标识（TI=5，COT=4/5）；
 /// 时间同步（TI=6）→ 更新站时钟并入队回读帧（FUN=255，COT=8）；
-/// 总召唤（TI=7，FUN=255 INF=0）→ 入队全部监视点（TI=1，COT=11）与终止帧（TI=8，COT=10）；
+/// 总召唤（TI=7，FUN=255 INF=0）→ 入队全部监视点（TI=1，COT=9，SIN=SCN）与终止帧（TI=8，COT=10）；
 /// 数据经 1 级召唤（FC=10）逐帧取出，ACD=1 提示队列非空。
 /// </summary>
 public sealed class Iec103Server : IDisposable
@@ -525,9 +525,10 @@ public sealed class Iec103Server : IDisposable
             var now = StationNow;
             foreach (var point in station.Points)
             {
+                // 7.4.3：总召唤应答 COT=9，SIN 回带扫描序号
                 EnqueueClass1(Asdu103.TimeTaggedMessage(
                     ca, (byte)point.Fun, (byte)point.Inf,
-                    DpiQuality103.FromDpi(point.Dpi), Cp56Time2a103.FromDateTime(now), Cot103.RemoteOperation));
+                    DpiQuality103.FromDpi(point.Dpi), Cp56Time2a103.FromDateTime(now), Cot103.GiStart, scn));
             }
 
             EnqueueClass1(Asdu103.GeneralInterrogationEnd(ca, scn));

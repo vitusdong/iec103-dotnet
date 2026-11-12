@@ -89,7 +89,7 @@ public static class TypeId103
 /// 3=复位FCB、4=复位CU（ZLG 标识报文 COT=4 实测吻合）、5=启动/重启、8=时间同步、
 /// 9=总召唤启动、10=终止、11/12=远方/当地操作（亦作命令返送）、20/21=命令肯定/否定确认、
 /// 40-44=通用分类系列。
-/// 总召唤数据点回送默认 COT=11（工程通行；部分装置用 5/9）。
+/// 总召唤数据点回送 COT=9（7.4.3：COT = 总召唤），SIN 为扫描序号。
 /// </summary>
 public static class Cot103
 {
@@ -221,7 +221,7 @@ public readonly record struct Cp56Time2a103(int Millisecond, int Minute, int Hou
 /// <summary>103 监视方向 DPI + 品质（TI=1 信息体第一字节）：低 2 位 DPI，bit2 IV、bit3 NT、bit4 SB、bit5 BL、bit6 EI。</summary>
 public readonly record struct DpiQuality103(int Dpi, bool Invalid, bool NonTopical, bool Substituted, bool Blocked, bool El)
 {
-    /// <summary>四个附加信息字节（DL/T 667 ASDU1 兼容方向固定为 FF）。</summary>
+    /// <summary>旧版 ASDU 1 布局的四个附加信息字节（已不再使用：ASDU 1 为 DPI + CP32Time2a + SIN）。</summary>
     public static readonly byte[] UnusedExtraInfo = [0xFF, 0xFF, 0xFF, 0xFF];
 
     public byte Encode()
@@ -377,15 +377,16 @@ public sealed record Asdu103(byte TypeId, bool Sq, int Count, byte Cot, bool Neg
     }
 
     /// <summary>
-    /// 带时标 CP56Time2a 的监视方向信息（TI=1）。
-    /// 信息体数据 = DPI/品质(1) + 4 个附加信息字节（兼容方向固定 FF）+ CP56Time2a(7)。
+    /// 带时标的监视方向信息（TI=1，IEC 60870-5-103 7.3.1.1）。
+    /// 信息体数据 = DPI(1) + 四字节时间 CP32Time2a(4，取 time 的毫秒/分/时) + 附加信息 SIN(1)，共 6 字节。
+    /// SIN：总召唤（COT=9）为扫描序号 SCN，命令确认（COT=20/21）为返回信息标识 RII，其余无意义。
     /// </summary>
-    public static Asdu103 TimeTaggedMessage(byte ca, byte fun, byte inf, DpiQuality103 dpi, Cp56Time2a103 time, byte cot, byte[]? extraInfo = null)
+    public static Asdu103 TimeTaggedMessage(byte ca, byte fun, byte inf, DpiQuality103 dpi, Cp56Time2a103 time, byte cot, byte sin = 0)
     {
-        var data = new byte[12];
+        var data = new byte[6];
         data[0] = dpi.Encode();
-        (extraInfo ?? DpiQuality103.UnusedExtraInfo).AsSpan(0, 4).CopyTo(data.AsSpan(1));
-        time.Encode().AsSpan().CopyTo(data.AsSpan(5));
+        time.Encode().AsSpan(0, 4).CopyTo(data.AsSpan(1));
+        data[5] = sin;
         return new Asdu103(TypeId103.TimeTaggedMessage, true, 1, cot, false, ca, fun, inf, data);
     }
 

@@ -100,20 +100,18 @@ public class Iec103AsduTests
     }
 
     [Fact]
-    public void 带时标监视信息_数据为DPI加4个附加信息字节加CP56共12字节()
+    public void 带时标监视信息_数据为DPI加CP32加SIN共6字节()
     {
+        // IEC 60870-5-103 7.3.1.1：DPI + 四字节时间 + SIN
         var time = new Cp56Time2a103(1000, 1, 2, 3, 4, 25, false, false);
         var asdu = Asdu103.TimeTaggedMessage(
-            ca: 1, fun: 160, inf: 5, dpi: DpiQuality103.FromDpi(2), time: time, cot: Cot103.RemoteOperation);
+            ca: 1, fun: 160, inf: 5, dpi: DpiQuality103.FromDpi(2), time: time, cot: Cot103.GiStart, sin: 7);
 
         Assert.Equal(TypeId103.TimeTaggedMessage, asdu.TypeId);
         Assert.Equal(160, asdu.Fun);
         Assert.Equal(5, asdu.Inf);
-        Assert.Equal(12, asdu.Data.Length);
-        Assert.Equal(2, asdu.Data[0]);
-        // 附加信息字节 FF FF FF FF（兼容方向固定）
-        Assert.Equal([0xFF, 0xFF, 0xFF, 0xFF], asdu.Data[1..5]);
-        Assert.Equal(time.Encode(), asdu.Data[5..]);
+        // TI=1 VSQ=81 COT=9 CA=1 FUN=A0 INF=05 DPI=02 CP32=E8 03 01 02 SIN=07
+        Assert.Equal(Hex("01 81 09 01 A0 05 02 E8 03 01 02 07"), asdu.Encode());
     }
 
     [Fact]

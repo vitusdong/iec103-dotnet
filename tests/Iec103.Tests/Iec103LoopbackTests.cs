@@ -135,13 +135,16 @@ public class Iec103LoopbackTests
         client.RequestClass1(1);
         client.RequestClass1(1);
 
-        var ack = client.SendGeneralInterrogation(1);
+        var ack = client.SendGeneralInterrogation(1, scn: 5);
         Assert.Equal((byte)SecondaryFunction103.Ack, LinkControl103.FromByte(ack.Control).Function);
 
         var received = client.DrainClass1UntilGiEnd(1);
         var points = received.Where(a => a.TypeId == TypeId103.TimeTaggedMessage).ToList();
         Assert.Equal(4, points.Count);
-        Assert.All(points, a => Assert.Equal(Cot103.RemoteOperation, a.Cot));
+        // 7.4.3：COT=9（总召唤），SIN 回带扫描序号 SCN
+        Assert.All(points, a => Assert.Equal(Cot103.GiStart, a.Cot));
+        Assert.All(points, a => Assert.Equal(6, a.Data.Length));
+        Assert.All(points, a => Assert.Equal(5, a.Data[5]));
         Assert.Equal([(160, 1), (160, 2), (161, 1), (128, 20)],
             points.Select(a => ((int)a.Fun, (int)a.Inf)));
         // DPI 随 workspace 配置
@@ -149,6 +152,7 @@ public class Iec103LoopbackTests
 
         var end = received.Single(a => a.TypeId == TypeId103.GeneralInterrogationEnd);
         Assert.Equal(Cot103.GiStop, end.Cot);
+        Assert.Equal([5], end.Data);
 
         // 召唤后队列应已取空
         var empty = client.RequestClass1(1);

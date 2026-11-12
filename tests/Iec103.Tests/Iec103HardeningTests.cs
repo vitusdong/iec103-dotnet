@@ -217,17 +217,19 @@ public class Iec103HardeningTests
     [Fact]
     public void 校时到过去时刻_总召唤时间戳使用同步钟()
     {
-        // 校时后事件时戳曾仍用 PC 墙钟——同步到 2020-01-01 后 GI 点时戳年份应为 2020
+        // 校时后事件时戳曾仍用 PC 墙钟——同步到与墙钟相差 12 小时的时刻后，
+        // GI 点时戳（ASDU 1 的 CP32Time2a 只含时/分/毫秒）的小时应为同步钟的小时
         var (server, client) = StartPair(BuildWorkspace());
         using var _ = client;
         using var __ = server;
 
-        client.SendClockSync(1, new DateTime(2020, 1, 1, 0, 0, 0, DateTimeKind.Local));
+        var hour = (DateTime.Now.Hour + 12) % 24;
+        client.SendClockSync(1, new DateTime(2020, 1, 1, hour, 30, 0, DateTimeKind.Local));
         client.SendGeneralInterrogation(1);
         var frames = client.DrainClass1UntilGiEnd(1);
 
         var point = frames.Single(a => a.TypeId == TypeId103.TimeTaggedMessage);
-        var timestamp = Cp56Time2a103.Decode(point.Data.AsSpan(5, 7)).ToDateTime();
-        Assert.Equal(2020, timestamp.Year);
+        var timestamp = Cp32Time2a103.Decode(point.Data.AsSpan(1, 4));
+        Assert.Equal(hour, timestamp.Hour);
     }
 }
