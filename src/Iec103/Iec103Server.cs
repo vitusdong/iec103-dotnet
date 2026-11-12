@@ -10,9 +10,10 @@ public sealed record FrameTrace(bool Sent, string Hex);
 /// IEC 60870-5-103 从站（TCP 或串口承载 FT1.2 字节流，帧层一致；
 /// TCP 对应网络化 103/串口服务器透传，串口对应 RS-485/RS-232 原生接线）。
 /// 非平衡式：仅响应主站链路服务。
-/// 复位（RESET CU）→ 清 1 级队列并入队兼容/专用标识（TI=5，COT=4/5）；
+/// 复位（RESET CU）→ 清 1 级队列并入队标识（TI=5，COT=4 INF=3；会话首次另加 COT=5 INF=4）；
+/// 复位 FCB → 标识（TI=5，COT=3 INF=2）排在 1 级队列队首；
 /// 时间同步（TI=6）→ 更新站时钟并入队回读帧（FUN=255，COT=8）；
-/// 总召唤（TI=7，FUN=255 INF=0）→ 入队全部监视点（TI=1，COT=11）与终止帧（TI=8，COT=10）；
+/// 总召唤（TI=7，FUN=255 INF=0）→ 入队全部监视点（TI=1，COT=9，SIN=SCN）与终止帧（TI=8，COT=10）；
 /// 数据经 1 级召唤（FC=10）逐帧取出，ACD=1 提示队列非空。
 /// </summary>
 public sealed class Iec103Server : IDisposable
@@ -265,14 +266,15 @@ public sealed class Iec103Server : IDisposable
         /// <summary>装置当前时钟：校时基准 + 实际流逝时间（校时后事件时戳不再用 PC 墙钟）。</summary>
         private DateTime StationNow => _stationClock + (DateTime.Now - _stationClockSetAt);
 
-        /// <summary>已传完的扰动通道（FAN → ACC 集合），齐全后发送扰动传输结束。</summary>
-        private readonly Dictionary<int, HashSet<byte>> _transferredChannels = [];
 
         /// <summary>2 级循环测量队列（一轮快照）。</summary>
         private readonly Queue<byte[]> _class2Queue = new();
 
         /// <summary>2 级一轮进行中（取空后先回无数据帧，再请求开新一轮）。</summary>
         private bool _class2RoundActive;
+
+        /// <summary>本会话已报过启动/重启标识（首次复位 CU 时报一次）。</summary>
+        private bool _started;
 
         public event Action? Closed;
 
@@ -395,6 +397,7 @@ public sealed class Iec103Server : IDisposable
                     break;
 
                 case PrimaryFunction103.ResetFcb:
+                    HandleResetFcb(station);
                     if (frame.Address != 255)
                     {
                         await WriteFrame(Frame103.EncodeFixed(LinkControl103.Secondary(SecondaryFunction103.Ack, acd: HasClass1()).ToByte(), frame.Address));
@@ -433,18 +436,52 @@ public sealed class Iec103Server : IDisposable
                 _class1Queue.Clear();
             }
 
-            // 复位后应答标识报文（兼容/专用范围），与 E8000 实测行为一致（两帧，COT=4/5）
+            // 7.4.1：复位 CU 后应答标识报文（TI=5，COT=4，INF=3）；会话首次复位另报启动/重启（COT=5，INF=4）
             if (station is not null)
             {
-                var ca = (byte)station.Address;
-                EnqueueClass1(Asdu103.Identification(ca, privateRange: false, station.CompatIdent));
-                EnqueueClass1(Asdu103.Identification(ca, privateRange: true, station.PrivateIdent));
+                EnqueueClass1(BuildIdentification(station, Cot103.ResetCu));
+                if (!_started)
+                {
+                    _started = true;
+                    EnqueueClass1(BuildIdentification(station, Cot103.Restart));
+                }
+
                 _log($"复位通信单元：地址 {station.Address}，标识已入 1 级队列");
             }
             else
             {
                 _log("复位通信单元（广播地址）");
             }
+        }
+
+        private void HandleResetFcb(Iec103StationModel? station)
+        {
+            if (station is null)
+            {
+                return;
+            }
+
+            // 7.4.1：复位 FCB 不清缓冲，应答标识报文（TI=5，COT=3，INF=2）排在队首
+            var ident = BuildIdentification(station, Cot103.ResetFcb).Encode();
+            lock (_queueLock)
+            {
+                var pending = _class1Queue.ToArray();
+                _class1Queue.Clear();
+                _class1Queue.Enqueue(ident);
+                foreach (var item in pending)
+                {
+                    _class1Queue.Enqueue(item);
+                }
+            }
+
+            _log($"复位帧计数位：地址 {station.Address}，标识已入 1 级队列队首");
+        }
+
+        private static Asdu103 BuildIdentification(Iec103StationModel station, byte cot)
+        {
+            return Asdu103.Identification(
+                (byte)station.Address, (byte)station.FunctionType, cot,
+                station.EffectiveCompatibilityLevel, station.CompatIdent, station.SoftwareIdBytes());
         }
 
         private async Task HandleUserData(Frame103 frame, Iec103StationModel? station)
@@ -468,7 +505,7 @@ public sealed class Iec103Server : IDisposable
                 TypeId103.GenericCommand when asdu.Cot == Cot103.GenericRead => HandleGenericRead(asdu, station),
                 TypeId103.GenericData when asdu.Cot == Cot103.GenericWrite => HandleGenericWrite(asdu, station),
                 TypeId103.DisturbanceCommand when asdu.Cot == Cot103.DisturbanceTransfer => HandleDisturbanceCommand(asdu, station),
-                TypeId103.DisturbanceAck when asdu.Cot == Cot103.DisturbanceTransfer => HandleDisturbanceAck(asdu),
+                TypeId103.DisturbanceAck when asdu.Cot == Cot103.DisturbanceTransfer => HandleDisturbanceAck(asdu, station),
                 // COT 放宽 20/11/12：GPGate 等网关下发一般命令用 COT=12（老后端真机字节流），仅认 20 会静默丢弃
                 TypeId103.GeneralCommand when asdu.Cot is Cot103.CommandAck or Cot103.RemoteOperation or Cot103.LocalOperation => HandleGeneralCommand(asdu, station),
                 _ => false,
@@ -525,9 +562,10 @@ public sealed class Iec103Server : IDisposable
             var now = StationNow;
             foreach (var point in station.Points)
             {
+                // 7.4.3：总召唤应答 COT=9，SIN 回带扫描序号
                 EnqueueClass1(Asdu103.TimeTaggedMessage(
                     ca, (byte)point.Fun, (byte)point.Inf,
-                    DpiQuality103.FromDpi(point.Dpi), Cp56Time2a103.FromDateTime(now), Cot103.RemoteOperation));
+                    DpiQuality103.FromDpi(point.Dpi), Cp56Time2a103.FromDateTime(now), Cot103.GiStart, scn));
             }
 
             EnqueueClass1(Asdu103.GeneralInterrogationEnd(ca, scn));
@@ -589,7 +627,8 @@ public sealed class Iec103Server : IDisposable
             }
 
             var cot = allValid ? Cot103.GenericReadValid : Cot103.GenericReadInvalid;
-            foreach (var response in ChunkGeneric(ca, rii, cot, sets))
+            // 7.4.8.6.2（图 16）：应答回带命令的 INF
+            foreach (var response in ChunkGeneric(ca, rii, cot, sets, asdu.Inf))
             {
                 EnqueueClass1(response);
             }
@@ -625,21 +664,24 @@ public sealed class Iec103Server : IDisposable
             var entry = station.GenericEntries.FirstOrDefault(e => e.Group == gin.Group && e.Entry == gin.Entry);
             if (entry is null)
             {
-                EnqueueClass1(Asdu103.GenericWriteAck(ca, rii, gin, set.Kod, Grc103.UnknownGin, negative: true));
+                EnqueueClass1(Asdu103.GenericWriteAck(ca, rii, gin, set.Kod, Grc103.UnknownGin, negative: true, asdu.Inf));
                 _log($"通用分类写：GIN {gin} 不存在，回否定确认");
                 return true;
             }
 
             if (entry.ReadOnly)
             {
-                EnqueueClass1(Asdu103.GenericWriteAck(ca, rii, gin, set.Kod, Grc103.ReadOnlyEntry, negative: true));
+                EnqueueClass1(Asdu103.GenericWriteAck(ca, rii, gin, set.Kod, Grc103.ReadOnlyEntry, negative: true, asdu.Inf));
                 _log($"通用分类写：GIN {gin} 只读，回否定确认");
                 return true;
             }
 
             var applied = ApplyWriteValue(entry, set);
-            var grc = applied ? Grc103.Acknowledge : Grc103.NotAcknowledged;
-            EnqueueClass1(Asdu103.GenericWriteAck(ca, rii, gin, set.Kod, grc, negative: !applied));
+            // 7.4.8.6.3（图 17）：应答回带命令的 INF；全部成功 COT=40 不带数据集（NGD 数目 0），
+            // 失败 COT=41 带 GIN 与回复码
+            EnqueueClass1(applied
+                ? Asdu103.GenericDataAsdu(ca, rii, continuation: false, Cot103.GenericWriteAckPositive, [], asdu.Inf)
+                : Asdu103.GenericWriteAck(ca, rii, gin, set.Kod, Grc103.NotAcknowledged, negative: true, asdu.Inf));
             _log($"通用分类写：GIN {gin}={set.DecodeValue() ?? "?"} → {(applied ? "认可" : "否定（类型不符）")}");
             return true;
         }
@@ -671,6 +713,8 @@ public sealed class Iec103Server : IDisposable
             }
 
             var record = disturbances.FirstOrDefault(r => r.Fan == fan);
+            // ASDU 23 的 FUN 取装置功能类型；未配置（255）时沿用命令的 FUN
+            var listFun = station.FunctionType != Asdu103.GlobalFun ? (byte)station.FunctionType : asdu.Fun;
             switch (too)
             {
                 case Too103.RequestDisturbanceList:
@@ -679,13 +723,13 @@ public sealed class Iec103Server : IDisposable
                     for (var offset = 0; offset < disturbanceCount; offset += listChunkSize)
                     {
                         var chunk = disturbances.Skip(offset).Take(listChunkSize).ToList();
-                        EnqueueClass1(DisturbanceAsdu.DisturbanceList(ca, chunk));
+                        EnqueueClass1(DisturbanceAsdu.DisturbanceList(ca, chunk, listFun));
                     }
 
                     if (disturbanceCount == 0)
                     {
                         // 空表也回一帧 VSQ=0，客户端据此得知无扰动
-                        EnqueueClass1(DisturbanceAsdu.DisturbanceList(ca, []));
+                        EnqueueClass1(DisturbanceAsdu.DisturbanceList(ca, [], listFun));
                     }
 
                     _log($"扰动表请求 → {disturbanceCount} 条记录（{(disturbanceCount + listChunkSize - 1) / listChunkSize} 帧）");
@@ -694,16 +738,13 @@ public sealed class Iec103Server : IDisposable
                 case Too103.SelectFault when record is not null:
                     EnqueueClass1(DisturbanceAsdu.TransferReady(ca, too, record, disturbanceCount));
                     _log($"选择故障 FAN={fan}：{record.Channels.Count} 通道 × {record.TotalSamples} 点，间隔 {record.SampleIntervalUs}µs");
-                    _transferredChannels[fan] = [];
                     break;
 
                 case Too103.RequestDisturbanceData when record is not null:
-                    foreach (var channel in record.Channels)
-                    {
-                        EnqueueClass1(DisturbanceAsdu.ChannelRating(ca, too, fan, channel));
-                    }
-
-                    _log($"扰动数据请求 FAN={fan} → {record.Channels.Count} 条通道一次值");
+                    // 7.4.7（图 10）：请求扰动数据 → 标签传输准备就绪（ASDU 28）；
+                    // 标签认可（ASDU 25 TOO=68/69）后再逐通道以 ASDU 27 提供
+                    EnqueueClass1(DisturbanceAsdu.TagsReady(ca, fan));
+                    _log($"扰动数据请求 FAN={fan} → 标签传输准备就绪");
                     break;
 
                 case Too103.RequestChannel when record is not null:
@@ -724,17 +765,6 @@ public sealed class Iec103Server : IDisposable
 
                     EnqueueClass1(DisturbanceAsdu.ChannelEnd(ca, Too103.EndChannel, fan, acc));
                     _log($"通道数据 FAN={fan} ACC={acc}：{samples.Length} 点（{Ceil(samples.Length, chunkSize)} 段）+ 通道终止");
-
-                    var transferred = _transferredChannels.TryGetValue(fan, out var set)
-                        ? set
-                        : _transferredChannels[fan] = [];
-                    _ = transferred.Add(acc);
-                    if (transferred.Count >= record.Channels.Count)
-                    {
-                        EnqueueClass1(DisturbanceAsdu.ChannelEnd(ca, Too103.EndDisturbance, fan, Acc103.Global));
-                        _log($"FAN={fan} 全部通道传完 → 扰动传输结束");
-                    }
-
                     break;
 
                 case Too103.RequestTags when record is not null:
@@ -756,7 +786,7 @@ public sealed class Iec103Server : IDisposable
             return true;
         }
 
-        private bool HandleDisturbanceAck(Asdu103 asdu)
+        private bool HandleDisturbanceAck(Asdu103 asdu, Iec103StationModel? station)
         {
             // TOO+TOV+FAN(2)+ACC 共 5 字节；短载荷拒绝而非异常终止会话
             if (asdu.Data.Length < 5)
@@ -765,9 +795,62 @@ public sealed class Iec103Server : IDisposable
                 return true;
             }
 
-            var (too, _, fan, _) = DisturbanceAsdu.DecodeCommand(asdu);
+            var (too, _, fan, acc) = DisturbanceAsdu.DecodeCommand(asdu);
             _log($"扰动认可：FAN={fan} {Too103.Describe(too)}");
+            if (station is null)
+            {
+                return true;
+            }
+
+            var ca = (byte)station.Address;
+            List<DisturbanceRecord103Model> disturbances;
+            lock (station.DisturbanceGate)
+            {
+                disturbances = [.. station.Disturbances];
+            }
+
+            var record = disturbances.FirstOrDefault(r => r.Fan == fan);
+            if (record is null)
+            {
+                return true;
+            }
+
+            // 7.4.7（图 10）：通道按 ACC 升序逐个提供；每个认可后提供下一通道，最后一个之后扰动传输结束
+            var channels = record.Channels.OrderBy(c => c.Acc).ToList();
+            switch (too)
+            {
+                case Too103.TagsPositiveAck:
+                case Too103.TagsNegativeAck:
+                    OfferChannelOrEnd(ca, fan, channels.FirstOrDefault());
+                    break;
+
+                case Too103.ChannelPositiveAck:
+                case Too103.ChannelNegativeAck:
+                    OfferChannelOrEnd(ca, fan, channels.FirstOrDefault(c => c.Acc > acc));
+                    break;
+
+                case Too103.PositiveAck:
+                case Too103.NegativeAck:
+                    // 传输完成后上送更新的扰动表（ASDU 23）
+                    var fun = station.FunctionType != Asdu103.GlobalFun ? (byte)station.FunctionType : asdu.Fun;
+                    EnqueueClass1(DisturbanceAsdu.DisturbanceList(ca, disturbances.Take(24).ToList(), fun));
+                    break;
+            }
+
             return true;
+        }
+
+        private void OfferChannelOrEnd(byte ca, int fan, DisturbanceChannel103Model? channel)
+        {
+            if (channel is not null)
+            {
+                EnqueueClass1(DisturbanceAsdu.ChannelRating(ca, Too103.RequestDisturbanceData, fan, channel));
+                _log($"FAN={fan} 提供通道 ACC={channel.Acc}（ASDU 27）");
+                return;
+            }
+
+            EnqueueClass1(DisturbanceAsdu.ChannelEnd(ca, Too103.EndDisturbance, fan, Acc103.Global));
+            _log($"FAN={fan} 全部通道传完 → 扰动传输结束");
         }
 
         private static int Ceil(int value, int divisor) => (value + divisor - 1) / divisor;
@@ -792,25 +875,27 @@ public sealed class Iec103Server : IDisposable
             var point = station.Points.FirstOrDefault(p => p.Fun == asdu.Fun && p.Inf == asdu.Inf);
 
             // 命令值映射（DL/T 667 DCT）：1=分、2=合；0 兼容单点 SCS OFF=分；3=不确定不执行
-            if (point is null || dct == 3)
+            if (point is null || !point.AcceptsCommands || dct == 3)
             {
-                // 未匹配或命令值不确定：负确认（TI=1，COT=远方操作，P/N=1）
-                var negative = Asdu103.TimeTaggedMessage(
-                    ca, asdu.Fun, asdu.Inf, DpiQuality103.FromDpi(0),
-                    Cp56Time2a103.FromDateTime(StationNow), Cot103.RemoteOperation);
-                EnqueueClass1(negative with { Negative = true });
+                // 7.4.4：不能执行的命令以否定确认拒绝（TI=1，COT=21，SIN=RII；DPI 无意义）
+                EnqueueClass1(Asdu103.TimeTaggedMessage(
+                    ca, asdu.Fun, asdu.Inf, DpiQuality103.FromDpi(point?.Dpi ?? 0),
+                    Cp56Time2a103.FromDateTime(StationNow), Cot103.CommandNack, rii));
                 _log($"⚠ 一般命令拒绝：FUN={asdu.Fun} INF={asdu.Inf} DCT={dct} QU={qu} RII={rii}" +
-                    (point is null ? "（点位不在模拟点表）" : "（命令值 3=不确定）") +
-                    "；链路仍回 ACK——GPGate 类网关将判成功，值未变化");
+                    (point is null ? "（点位不在模拟点表）" : point.AcceptsCommands ? "（命令值 3=不确定）" : "（点位不接受命令）") +
+                    "，否定确认（COT=21）已入 1 级队列");
                 return true;
             }
 
             point.Dpi = dct is 1 or 0 ? 1 : 2;
+            var now = Cp56Time2a103.FromDateTime(StationNow);
+            // 7.4.4：先肯定确认（TI=1，COT=20，SIN=RII），再上送命令引起的状态变化（TI=1，COT=12 远方操作）
             EnqueueClass1(Asdu103.TimeTaggedMessage(
-                ca, (byte)point.Fun, (byte)point.Inf, DpiQuality103.FromDpi(point.Dpi),
-                Cp56Time2a103.FromDateTime(StationNow), Cot103.RemoteOperation));
+                ca, (byte)point.Fun, (byte)point.Inf, DpiQuality103.FromDpi(point.Dpi), now, Cot103.CommandAck, rii));
+            EnqueueClass1(Asdu103.TimeTaggedMessage(
+                ca, (byte)point.Fun, (byte)point.Inf, DpiQuality103.FromDpi(point.Dpi), now, Cot103.RemoteOperation));
             _log($"ACK command applied FUN={point.Fun}, INF={point.Inf}, DPI={point.Dpi}" +
-                $"（{(point.Dpi == 1 ? "分/OFF" : "合/ON")}，QU={qu} RII={rii}），返送已入 1 级队列");
+                $"（{(point.Dpi == 1 ? "分/OFF" : "合/ON")}，QU={qu} RII={rii}），肯定确认与状态变化已入 1 级队列");
             return true;
         }
 
@@ -874,7 +959,7 @@ public sealed class Iec103Server : IDisposable
         }
 
         /// <summary>数据集序列按 FT1.2 单帧字节预算分帧；除最后一帧外 NGD 后续标志置位。</summary>
-        private static IEnumerable<Asdu103> ChunkGeneric(byte ca, byte rii, byte cot, List<GenericDataSet103> sets)
+        private static IEnumerable<Asdu103> ChunkGeneric(byte ca, byte rii, byte cot, List<GenericDataSet103> sets, byte inf)
         {
             var budget = Frame103.MaxAsduLength - 8 - 2; // ASDU 头 8 字节 + RII + NGD
             var current = new List<GenericDataSet103>();
@@ -883,7 +968,7 @@ public sealed class Iec103Server : IDisposable
             {
                 if (current.Count > 0 && used + set.EncodedSize > budget)
                 {
-                    yield return Asdu103.GenericDataAsdu(ca, rii, continuation: true, cot, current);
+                    yield return Asdu103.GenericDataAsdu(ca, rii, continuation: true, cot, current, inf);
                     current = [];
                     used = 0;
                 }
@@ -892,7 +977,7 @@ public sealed class Iec103Server : IDisposable
                 used += set.EncodedSize;
             }
 
-            yield return Asdu103.GenericDataAsdu(ca, rii, continuation: false, cot, current);
+            yield return Asdu103.GenericDataAsdu(ca, rii, continuation: false, cot, current, inf);
         }
 
         private async Task RespondFromClass1(byte address)

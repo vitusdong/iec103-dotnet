@@ -42,6 +42,18 @@ public static class Too103
     /// <summary>扰动数据传输失败（主站认可）。</summary>
     public const byte NegativeAck = 65;
 
+    /// <summary>通道传输成功（主站认可）。</summary>
+    public const byte ChannelPositiveAck = 66;
+
+    /// <summary>通道传输失败（主站认可）。</summary>
+    public const byte ChannelNegativeAck = 67;
+
+    /// <summary>标签传输成功（主站认可）。</summary>
+    public const byte TagsPositiveAck = 68;
+
+    /// <summary>标签传输失败（主站认可）。</summary>
+    public const byte TagsNegativeAck = 69;
+
     public static string Describe(byte too) => too switch
     {
         SelectFault => "选择故障",
@@ -63,6 +75,10 @@ public static class Too103
         EndTags + 2 => "标签传输结束（装置中止）",
         PositiveAck => "扰动数据传输成功（肯定）",
         NegativeAck => "扰动数据传输失败（否定）",
+        ChannelPositiveAck => "通道传输成功（肯定）",
+        ChannelNegativeAck => "通道传输失败（否定）",
+        TagsPositiveAck => "标签传输成功（肯定）",
+        TagsNegativeAck => "标签传输失败（否定）",
         _ => $"TOO {too}",
     };
 }
@@ -93,7 +109,9 @@ public static class Acc103
 }
 
 /// <summary>
-/// 故障状态字节 SOF：bit7 TP 保护跳闸、bit6 TM 跳闸命令、bit5 TEST 试验、bit4 OTEV 事件由装置启动。
+/// 故障状态字节 SOF（IEC 60870-5-103 7.2.6.24）：bit1 TP 带跳闸的故障记录、bit2 TM 扰动数据正在传输、
+/// bit3 TEST 测试模式下记录、bit4 OTEV 由保护启动以外的其他事件触发记录；bit5-8 备用。
+/// 属性对应：TripProtection=TP、TripCommand=TM、Test=TEST、EquipmentStart=OTEV。
 /// </summary>
 public readonly record struct Sof103(bool TripProtection, bool TripCommand, bool Test, bool EquipmentStart)
 {
@@ -102,32 +120,32 @@ public readonly record struct Sof103(bool TripProtection, bool TripCommand, bool
         var value = (byte)0;
         if (TripProtection)
         {
-            value |= 0x80;
+            value |= 0x01;
         }
 
         if (TripCommand)
         {
-            value |= 0x40;
+            value |= 0x02;
         }
 
         if (Test)
         {
-            value |= 0x20;
+            value |= 0x04;
         }
 
         if (EquipmentStart)
         {
-            value |= 0x10;
+            value |= 0x08;
         }
 
         return value;
     }
 
     public static Sof103 Decode(byte value) => new(
-        TripProtection: (value & 0x80) != 0,
-        TripCommand: (value & 0x40) != 0,
-        Test: (value & 0x20) != 0,
-        EquipmentStart: (value & 0x10) != 0);
+        TripProtection: (value & 0x01) != 0,
+        TripCommand: (value & 0x02) != 0,
+        Test: (value & 0x04) != 0,
+        EquipmentStart: (value & 0x08) != 0);
 }
 
 /// <summary>
@@ -264,8 +282,11 @@ public sealed class DisturbanceRecord103Model
 /// <summary>扰动 ASDU 数据段编码（数据区位于 FUN/INF 之后；FUN=255、COT=31）。</summary>
 public static class DisturbanceAsdu
 {
-    /// <summary>ASDU 23 被记录的扰动表：每条 FAN(2)+SOF(1)+CP56(7)，VSQ 记录数。</summary>
-    public static Asdu103 DisturbanceList(byte ca, IReadOnlyList<DisturbanceRecord103Model> records)
+    /// <summary>
+    /// ASDU 23 被记录的扰动表（IEC 60870-5-103 7.3.1.11）：每条 FAN(2)+SOF(1)+CP56(7)，
+    /// VSQ 的 SQ=0、数目 = 记录数；FUN 为装置功能类型，INF 不用（0）。
+    /// </summary>
+    public static Asdu103 DisturbanceList(byte ca, IReadOnlyList<DisturbanceRecord103Model> records, byte fun = Asdu103.GlobalFun)
     {
         var data = new byte[records.Count * 10];
         var offset = 0;
@@ -279,7 +300,7 @@ public static class DisturbanceAsdu
             offset += 7;
         }
 
-        return new Asdu103(TypeId103.DisturbanceList, true, records.Count, Cot103.DisturbanceTransfer, false, ca, Asdu103.GlobalFun, 0, data);
+        return new Asdu103(TypeId103.DisturbanceList, false, records.Count, Cot103.DisturbanceTransfer, false, ca, fun, 0, data);
     }
 
     /// <summary>ASDU 24/25：TOO(1)+TOV(1)+FAN(2)+ACC(1)。</summary>
@@ -346,7 +367,7 @@ public static class DisturbanceAsdu
         data[3] = (byte)(fan >> 8);
         data[4] = acc;
         data[5] = (byte)count;
-        var nfe = (ushort)(offset + 1); // 元素序号从 1 起
+        var nfe = (ushort)offset; // 7.2.6.9：NFE <0..65535>，首个扰动值为 0 号（与 TAP 的位置 0 一致）
         data[6] = (byte)(nfe & 0xFF);
         data[7] = (byte)(nfe >> 8);
         for (var i = 0; i < count; i++)
@@ -364,6 +385,13 @@ public static class DisturbanceAsdu
     {
         return new Asdu103(TypeId103.ChannelEnd, true, 1, Cot103.DisturbanceTransfer, false, ca, Asdu103.GlobalFun, 0,
             [too, Tov103.InstantaneousValues, (byte)(fan & 0xFF), (byte)(fan >> 8), acc]);
+    }
+
+    /// <summary>ASDU 28 标签传输准备就绪（7.3.1.14）：INF 与其后两字节不用（0）+ FAN(2)。</summary>
+    public static Asdu103 TagsReady(byte ca, int fan)
+    {
+        return new Asdu103(TypeId103.TagsReady, true, 1, Cot103.DisturbanceTransfer, false, ca, Asdu103.GlobalFun, 0,
+            [0, 0, (byte)(fan & 0xFF), (byte)(fan >> 8)]);
     }
 
     /// <summary>ASDU 29 带标签的通道扰动数据：FAN(2)+NOT(标签数)+TAP(标签位置)+NOT×(FUN+INF+DPI)。</summary>

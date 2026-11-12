@@ -20,8 +20,18 @@ public class Iec103GenericTests
     [Fact]
     public void 读单条命令编码()
     {
+        // 表 18：INF=244 读单个条目的值或属性
         var asdu = Asdu103.GenericRead(1, rii: 5, (new Gin103(1, 2), Kod103.ActualValue));
-        Assert.Equal(Hex("15 81 2A 01 FE 00 05 01 01 02 01"), asdu.Encode());
+        Assert.Equal(Hex("15 81 2A 01 FE F4 05 01 01 02 01"), asdu.Encode());
+    }
+
+    [Fact]
+    public void 写条目命令编码_INF250()
+    {
+        // 表 18：INF=250 带执行的写条目（TI=10，COT=40）
+        var set = GenericDataSet103.Unsigned(new Gin103(1, 3), Kod103.ActualValue, 450, 2);
+        var asdu = Asdu103.GenericDataAsdu(1, rii: 1, continuation: false, Cot103.GenericWrite, [set], Asdu103.InfGenericWriteWithExecution);
+        Assert.Equal(Hex("0A 81 28 01 FE FA 01 01 01 03 01 03 02 01 C2 01"), asdu.Encode());
     }
 
     [Fact]
@@ -179,6 +189,39 @@ public class Iec103GenericTests
 
         var actual = client.ReadGenericEntries(1, (new Gin103(1, 2), Kod103.ActualValue)).Single();
         Assert.Equal(7.5f, actual.DecodeValue());
+    }
+
+    [Fact]
+    public void 通用分类自环_应答回带命令INF且肯定写确认不带数据集()
+    {
+        var station = new Iec103StationModel
+        {
+            Address = 1,
+            GenericEntries =
+            [
+                new GenericEntry103Model { Group = 1, Entry = 3, Description = "DELAY", DataType = "uint", ActualValue = 300, IntWidth = 2 },
+            ],
+        };
+        using var loopback = StartLoopback(station);
+        var client = loopback.Client;
+        client.ResetLink(1);
+
+        // 7.4.8.6.2（图 16）：读应答 TI=10 COT=42，INF=244 与命令一致
+        client.ReadGenericEntries(1, (new Gin103(1, 3), Kod103.ActualValue));
+        var read = client.GetReceivedSnapshot().Select(r => r.Asdu).Last(a => a.TypeId == TypeId103.GenericData);
+        Assert.Equal(Cot103.GenericReadValid, read.Cot);
+        Assert.Equal(Asdu103.InfGenericReadEntry, read.Inf);
+
+        // 7.4.8.6.3（图 17）：带执行的写 INF=250 → COT=40、INF=250、NGD 数目 0（无数据集）
+        var ack = client.WriteGenericValue(1, GenericDataSet103.Unsigned(new Gin103(1, 3), Kod103.ActualValue, 450, 2));
+        Assert.Equal(Grc103.Acknowledge, ack.Gid[0]);
+        var write = client.GetReceivedSnapshot().Select(r => r.Asdu).Last(a => a.TypeId == TypeId103.GenericData);
+        Assert.Equal(Cot103.GenericWriteAckPositive, write.Cot);
+        Assert.Equal(Asdu103.InfGenericWriteWithExecution, write.Inf);
+        Assert.Equal(Hex("0A 81 28 01 FE FA"), write.Encode()[..6]);
+        Assert.Equal(0, Ngd103.Decode(write.Data[1]).Count);
+        Assert.Equal(2, write.Data.Length);
+        Assert.Equal(450L, client.ReadGenericEntries(1, (new Gin103(1, 3), Kod103.ActualValue)).Single().DecodeValue());
     }
 
     [Fact]

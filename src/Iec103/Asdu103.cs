@@ -42,6 +42,9 @@ public static class TypeId103
     /// <summary>扰动数据传输的命令（TOO/TOV/FAN/ACC）。</summary>
     public const byte DisturbanceCommand = 24;
 
+    /// <summary>标签传输准备就绪（FAN）。</summary>
+    public const byte TagsReady = 28;
+
     /// <summary>带标签的通道扰动数据（标签传输）。</summary>
     public const byte DisturbanceTags = 29;
 
@@ -73,6 +76,7 @@ public static class TypeId103
         GeneralCommand => "一般命令",
         DisturbanceCommand => "扰动数据传输的命令",
         DisturbanceAck => "扰动数据传输的认可",
+        TagsReady => "标签传输准备就绪",
         DisturbanceTags => "带标签的通道扰动数据",
         DisturbanceList => "被记录的扰动表",
         DisturbanceReady => "扰动数据传输准备就绪",
@@ -87,9 +91,9 @@ public static class TypeId103
 /// 103 传输原因（COT，1 字节，bit7 为 P/N 否定位）。
 /// 与 101/104 在 3 之后分道（103 专有表，ARIEC103 与 Wireshark dissector 双源核对）：
 /// 3=复位FCB、4=复位CU（ZLG 标识报文 COT=4 实测吻合）、5=启动/重启、8=时间同步、
-/// 9=总召唤启动、10=终止、11/12=远方/当地操作（亦作命令返送）、20/21=命令肯定/否定确认、
+/// 9=总召唤启动、10=终止、11/12=当地/远方操作（12 亦作命令引起的状态变化）、20/21=命令肯定/否定确认、
 /// 40-44=通用分类系列。
-/// 总召唤数据点回送默认 COT=11（工程通行；部分装置用 5/9）。
+/// 总召唤数据点回送 COT=9（7.4.3：COT = 总召唤），SIN 为扫描序号。
 /// </summary>
 public static class Cot103
 {
@@ -103,8 +107,11 @@ public static class Cot103
     public const byte ClockSync = 8;
     public const byte GiStart = 9;
     public const byte GiStop = 10;
-    public const byte RemoteOperation = 11;
-    public const byte LocalOperation = 12;
+    /// <summary>当地操作（IEC 60870-5-103 表 5：11）。</summary>
+    public const byte LocalOperation = 11;
+
+    /// <summary>远方操作（IEC 60870-5-103 表 5：12）：一般命令引起的状态变化以此 COT 上送（7.4.4）。</summary>
+    public const byte RemoteOperation = 12;
     public const byte CommandAck = 20;
     public const byte CommandNack = 21;
     public const byte DisturbanceTransfer = 31;
@@ -221,7 +228,7 @@ public readonly record struct Cp56Time2a103(int Millisecond, int Minute, int Hou
 /// <summary>103 监视方向 DPI + 品质（TI=1 信息体第一字节）：低 2 位 DPI，bit2 IV、bit3 NT、bit4 SB、bit5 BL、bit6 EI。</summary>
 public readonly record struct DpiQuality103(int Dpi, bool Invalid, bool NonTopical, bool Substituted, bool Blocked, bool El)
 {
-    /// <summary>四个附加信息字节（DL/T 667 ASDU1 兼容方向固定为 FF）。</summary>
+    /// <summary>旧版 ASDU 1 布局的四个附加信息字节（已不再使用：ASDU 1 为 DPI + CP32Time2a + SIN）。</summary>
     public static readonly byte[] UnusedExtraInfo = [0xFF, 0xFF, 0xFF, 0xFF];
 
     public byte Encode()
@@ -296,6 +303,16 @@ public sealed record Asdu103(byte TypeId, bool Sq, int Count, byte Cot, bool Neg
 
     public const byte InfPrivateIdent = 81;
 
+    /// <summary>系统功能信息序号（IEC 60870-5-103 表 8，TI=5）：2 复位 FCB（COT=3）、3 复位 CU（COT=4）、
+    /// 4 启动/重启（COT=5）、5 上电（COT=6）。FUN 为装置主功能类型。</summary>
+    public const byte InfResetFcb = 2;
+
+    public const byte InfResetCu = 3;
+
+    public const byte InfStartRestart = 4;
+
+    public const byte InfPowerOn = 5;
+
     public byte[] Encode()
     {
         var vsq = (byte)((Sq ? 0x80 : 0) | (Count & 0x7F));
@@ -364,8 +381,33 @@ public sealed record Asdu103(byte TypeId, bool Sq, int Count, byte Cot, bool Neg
     }
 
     /// <summary>
-    /// 标识报文（TI=5，FUN=255，INF=80 兼容范围 / 81 专用范围），数据为 8 字节 ASCII（空格填充）。
+    /// 标识报文（TI=5，IEC 60870-5-103 7.3.1.5）：数据 = 兼容级别 COL(1) + 8 字节 ASCII（空格填充）
+    /// + 4 字节软件标识（厂家自由使用），共 13 字节。
+    /// COT 3/4/5/6（复位 FCB/复位 CU/启动重启/上电）对应 INF 2/3/4/5（表 8）；FUN 为装置主功能类型。
     /// </summary>
+    public static Asdu103 Identification(byte ca, byte fun, byte cot, byte col, string ascii, byte[] software)
+    {
+        var inf = cot switch
+        {
+            Cot103.ResetFcb => InfResetFcb,
+            Cot103.ResetCu => InfResetCu,
+            Cot103.Restart => InfStartRestart,
+            Cot103.PowerOn => InfPowerOn,
+            _ => throw new ArgumentOutOfRangeException(nameof(cot), cot, "标识报文 COT 应为 3/4/5/6"),
+        };
+        var text = ascii.Length > 8 ? ascii[..8] : ascii.PadRight(8);
+        var data = new byte[13];
+        data[0] = col;
+        System.Text.Encoding.ASCII.GetBytes(text).CopyTo(data, 1);
+        software.AsSpan(0, Math.Min(4, software.Length)).CopyTo(data.AsSpan(9));
+        return new Asdu103(TypeId103.Identification, true, 1, cot, false, ca, fun, inf, data);
+    }
+
+    /// <summary>
+    /// 旧版标识报文（TI=5，FUN=255，INF=80 兼容范围 / 81 专用范围），数据仅 8 字节 ASCII（空格填充），
+    /// 不含兼容级别与软件标识，不符合 IEC 60870-5-103 7.3.1.5。
+    /// </summary>
+    [Obsolete("缺少 COL 与软件标识，INF 80/81 非表 8 序号；改用 Identification(ca, fun, cot, col, ascii, software)")]
     public static Asdu103 Identification(byte ca, bool privateRange, string ascii)
     {
         var text = ascii.Length > 8 ? ascii[..8] : ascii.PadRight(8);
@@ -377,15 +419,16 @@ public sealed record Asdu103(byte TypeId, bool Sq, int Count, byte Cot, bool Neg
     }
 
     /// <summary>
-    /// 带时标 CP56Time2a 的监视方向信息（TI=1）。
-    /// 信息体数据 = DPI/品质(1) + 4 个附加信息字节（兼容方向固定 FF）+ CP56Time2a(7)。
+    /// 带时标的监视方向信息（TI=1，IEC 60870-5-103 7.3.1.1）。
+    /// 信息体数据 = DPI(1) + 四字节时间 CP32Time2a(4，取 time 的毫秒/分/时) + 附加信息 SIN(1)，共 6 字节。
+    /// SIN：总召唤（COT=9）为扫描序号 SCN，命令确认（COT=20/21）为返回信息标识 RII，其余无意义。
     /// </summary>
-    public static Asdu103 TimeTaggedMessage(byte ca, byte fun, byte inf, DpiQuality103 dpi, Cp56Time2a103 time, byte cot, byte[]? extraInfo = null)
+    public static Asdu103 TimeTaggedMessage(byte ca, byte fun, byte inf, DpiQuality103 dpi, Cp56Time2a103 time, byte cot, byte sin = 0)
     {
-        var data = new byte[12];
+        var data = new byte[6];
         data[0] = dpi.Encode();
-        (extraInfo ?? DpiQuality103.UnusedExtraInfo).AsSpan(0, 4).CopyTo(data.AsSpan(1));
-        time.Encode().AsSpan().CopyTo(data.AsSpan(5));
+        time.Encode().AsSpan(0, 4).CopyTo(data.AsSpan(1));
+        data[5] = sin;
         return new Asdu103(TypeId103.TimeTaggedMessage, true, 1, cot, false, ca, fun, inf, data);
     }
 
@@ -393,6 +436,12 @@ public sealed record Asdu103(byte TypeId, bool Sq, int Count, byte Cot, bool Neg
 
     /// <summary>通用分类 ASDU 的功能类型（GEN）。</summary>
     public const byte GenericFun = 254;
+
+    /// <summary>通用分类命令信息序号（IEC 60870-5-103 表 18）：244 读单个条目的值或属性（TI=21，COT=42）。</summary>
+    public const byte InfGenericReadEntry = 244;
+
+    /// <summary>通用分类命令信息序号（表 18）：250 带执行的写条目（TI=10，COT=40）。</summary>
+    public const byte InfGenericWriteWithExecution = 250;
 
     /// <summary>读全目录命令（TI=21，COT=42）：RII + NOG=1 + GIN 0000 + KOD=描述。</summary>
     public static Asdu103 GenericReadAll(byte ca, byte rii)
@@ -405,7 +454,7 @@ public sealed record Asdu103(byte TypeId, bool Sq, int Count, byte Cot, bool Neg
         return new Asdu103(TypeId103.GenericCommand, true, 1, Cot103.GenericRead, false, ca, GenericFun, 0, data);
     }
 
-    /// <summary>读指定条目命令（TI=21，COT=42）：RII + NOG + 每条 GIN/KOD。</summary>
+    /// <summary>读指定条目命令（TI=21，COT=42，INF=244 读单个条目的值或属性）：RII + NOG + 每条 GIN/KOD。</summary>
     public static Asdu103 GenericRead(byte ca, byte rii, params (Gin103 Gin, byte Kod)[] entries)
     {
         var data = new byte[2 + entries.Length * 3];
@@ -419,14 +468,15 @@ public sealed record Asdu103(byte TypeId, bool Sq, int Count, byte Cot, bool Neg
             offset += 3;
         }
 
-        return new Asdu103(TypeId103.GenericCommand, true, 1, Cot103.GenericRead, false, ca, GenericFun, 0, data);
+        return new Asdu103(TypeId103.GenericCommand, true, 1, Cot103.GenericRead, false, ca, GenericFun, InfGenericReadEntry, data);
     }
 
     /// <summary>
     /// 通用分类数据（TI=10）：数据 = RII + NGD + 数据集序列。
     /// COT 语义：40 主站写命令 / 42 读响应（有效）/ 43 读响应（无效）。
+    /// INF 为表 18 的命令序号（主站写命令用 250），应答回带命令的 INF。
     /// </summary>
-    public static Asdu103 GenericDataAsdu(byte ca, byte rii, bool continuation, byte cot, IReadOnlyList<GenericDataSet103> sets)
+    public static Asdu103 GenericDataAsdu(byte ca, byte rii, bool continuation, byte cot, IReadOnlyList<GenericDataSet103> sets, byte inf = 0)
     {
         var data = new byte[2 + sets.Sum(s => s.EncodedSize)];
         data[0] = rii;
@@ -438,7 +488,7 @@ public sealed record Asdu103(byte TypeId, bool Sq, int Count, byte Cot, bool Neg
             offset += set.EncodedSize;
         }
 
-        return new Asdu103(TypeId103.GenericData, true, 1, cot, false, ca, GenericFun, 0, data);
+        return new Asdu103(TypeId103.GenericData, true, 1, cot, false, ca, GenericFun, inf, data);
     }
 
     /// <summary>
@@ -459,6 +509,7 @@ public sealed record Asdu103(byte TypeId, bool Sq, int Count, byte Cot, bool Neg
 
     /// <summary>
     /// 一般命令（TI=20，COT=20）：FUN/INF 指定目标，数据 = DCO+RII。
+    /// 从站以 ASDU 1 COT=20/21（SIN=RII）确认，命令引起的状态变化以 ASDU 1 COT=12 上送（7.4.4）。
     /// DCO 按 DL/T 667：bit0-1 命令值 DCT（01 分/10 合/11 不确定；00 兼容单点 SCS OFF=分），
     /// bit6-7 限定词 QU（0 默认）。
     /// </summary>
@@ -492,7 +543,11 @@ public sealed record Asdu103(byte TypeId, bool Sq, int Count, byte Cot, bool Neg
     {
         return (asdu.Data[1] | (asdu.Data[2] << 8), asdu.Data[3] | (asdu.Data[4] << 8));
     }
-    public static Asdu103 GenericWriteAck(byte ca, byte rii, Gin103 gin, byte kod, byte grc, bool negative)
+    /// <summary>
+    /// 通用分类写确认（TI=10，COT=40/41）：一个 GIN + 回复码数据集，INF 回带写命令的 INF。
+    /// 全部写成功的肯定确认按 7.4.8.6.3 不需数据集，可用 GenericDataAsdu 发送空数据集序列。
+    /// </summary>
+    public static Asdu103 GenericWriteAck(byte ca, byte rii, Gin103 gin, byte kod, byte grc, bool negative, byte inf = 0)
     {
         var set = GenericDataSet103.ReplyCode(gin, kod, grc);
         var data = new byte[2 + set.EncodedSize];
@@ -500,6 +555,6 @@ public sealed record Asdu103(byte TypeId, bool Sq, int Count, byte Cot, bool Neg
         data[1] = Ngd103.Encode(1, false);
         set.Encode().CopyTo(data, 2);
         var cot = negative ? Cot103.GenericWriteAckNegative : Cot103.GenericWriteAckPositive;
-        return new Asdu103(TypeId103.GenericData, true, 1, cot, false, ca, GenericFun, 0, data);
+        return new Asdu103(TypeId103.GenericData, true, 1, cot, false, ca, GenericFun, inf, data);
     }
 }

@@ -15,6 +15,9 @@ public sealed class Iec103PointModel
     /// <summary>当前双点状态：0 不确定、1 分、2 合。</summary>
     public int Dpi { get; set; }
 
+    /// <summary>是否接受同 FUN/INF 的一般命令（TI=20）；false 时命令回否定确认（COT=21）。</summary>
+    public bool AcceptsCommands { get; set; } = true;
+
     public string Description { get; set; } = string.Empty;
 }
 
@@ -75,11 +78,40 @@ public sealed class Iec103StationModel
 
     public string Name { get; set; } = string.Empty;
 
-    /// <summary>兼容范围标识文本（8 字符，TI=5 INF=80）。</summary>
+    /// <summary>标识报文的 8 字符 ASCII（厂家名称，TI=5）。</summary>
     public string CompatIdent { get; set; } = "TEST-103";
 
-    /// <summary>专用范围标识文本（8 字符，TI=5 INF=81）。</summary>
+    /// <summary>旧版专用范围标识文本（TI=5 INF=81）。已不再发送。</summary>
     public string PrivateIdent { get; set; } = "TEST-DEV";
+
+    /// <summary>装置主功能类型（标识报文 TI=5 的 FUN，例如 160 过流保护；255 为全局）。</summary>
+    public int FunctionType { get; set; } = Asdu103.GlobalFun;
+
+    /// <summary>兼容级别 COL（7.2.6.3）：2 不用通用分类服务、3 使用通用分类服务；null 时按是否配置通用分类目录取 3 或 2。</summary>
+    public int? CompatibilityLevel { get; set; }
+
+    /// <summary>标识报文的 4 字节软件标识（厂家自由使用），8 位十六进制，如 "01020304"。</summary>
+    public string SoftwareId { get; set; } = "00000000";
+
+    /// <summary>标识报文用的兼容级别（未配置时按通用分类目录推定）。</summary>
+    [JsonIgnore]
+    public byte EffectiveCompatibilityLevel => (byte)(CompatibilityLevel ?? (GenericEntries.Count > 0 ? 3 : 2));
+
+    /// <summary>标识报文用的 4 字节软件标识（非法十六进制按全零）。</summary>
+    public byte[] SoftwareIdBytes()
+    {
+        try
+        {
+            var bytes = Convert.FromHexString(SoftwareId ?? string.Empty);
+            var result = new byte[4];
+            bytes.AsSpan(0, Math.Min(4, bytes.Length)).CopyTo(result);
+            return result;
+        }
+        catch (FormatException)
+        {
+            return new byte[4];
+        }
+    }
 
     public List<Iec103PointModel> Points { get; set; } = [];
 
