@@ -95,11 +95,12 @@ public class Iec103SerialLoopbackTests
         Assert.Equal(Frame103Format.FixedLength, ack.Format);
         Assert.Equal((byte)SecondaryFunction103.Ack, LinkControl103.FromByte(ack.Control).Function);
 
-        Asdu103.TryDecode(client.RequestClass1(1).Asdu, out var compat, out _);
-        Asdu103.TryDecode(client.RequestClass1(1).Asdu, out var privateIdent, out _);
-        Assert.Equal(TypeId103.Identification, compat!.TypeId);
-        Assert.Equal(80, compat.Inf);
-        Assert.Equal(81, privateIdent!.Inf);
+        Asdu103.TryDecode(client.RequestClass1(1).Asdu, out var resetCu, out _);
+        Asdu103.TryDecode(client.RequestClass1(1).Asdu, out var restart, out _);
+        Assert.Equal(TypeId103.Identification, resetCu!.TypeId);
+        Assert.Equal(Asdu103.InfResetCu, resetCu.Inf);
+        Assert.Equal(Cot103.ResetCu, resetCu.Cot);
+        Assert.Equal(Asdu103.InfStartRestart, restart!.Inf);
 
         var empty = client.RequestClass1(1);
         Assert.Equal((byte)SecondaryFunction103.RespondNoData, LinkControl103.FromByte(empty.Control).Function);

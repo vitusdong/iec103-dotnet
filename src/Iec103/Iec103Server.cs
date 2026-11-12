@@ -10,7 +10,8 @@ public sealed record FrameTrace(bool Sent, string Hex);
 /// IEC 60870-5-103 从站（TCP 或串口承载 FT1.2 字节流，帧层一致；
 /// TCP 对应网络化 103/串口服务器透传，串口对应 RS-485/RS-232 原生接线）。
 /// 非平衡式：仅响应主站链路服务。
-/// 复位（RESET CU）→ 清 1 级队列并入队兼容/专用标识（TI=5，COT=4/5）；
+/// 复位（RESET CU）→ 清 1 级队列并入队标识（TI=5，COT=4 INF=3；会话首次另加 COT=5 INF=4）；
+/// 复位 FCB → 标识（TI=5，COT=3 INF=2）排在 1 级队列队首；
 /// 时间同步（TI=6）→ 更新站时钟并入队回读帧（FUN=255，COT=8）；
 /// 总召唤（TI=7，FUN=255 INF=0）→ 入队全部监视点（TI=1，COT=9，SIN=SCN）与终止帧（TI=8，COT=10）；
 /// 数据经 1 级召唤（FC=10）逐帧取出，ACD=1 提示队列非空。
@@ -274,6 +275,9 @@ public sealed class Iec103Server : IDisposable
         /// <summary>2 级一轮进行中（取空后先回无数据帧，再请求开新一轮）。</summary>
         private bool _class2RoundActive;
 
+        /// <summary>本会话已报过启动/重启标识（首次复位 CU 时报一次）。</summary>
+        private bool _started;
+
         public event Action? Closed;
 
         public Session(Stream stream, Action close, Workspace103Model workspace, Action<string> log, Action<bool, string> trace)
@@ -395,6 +399,7 @@ public sealed class Iec103Server : IDisposable
                     break;
 
                 case PrimaryFunction103.ResetFcb:
+                    HandleResetFcb(station);
                     if (frame.Address != 255)
                     {
                         await WriteFrame(Frame103.EncodeFixed(LinkControl103.Secondary(SecondaryFunction103.Ack, acd: HasClass1()).ToByte(), frame.Address));
@@ -433,18 +438,52 @@ public sealed class Iec103Server : IDisposable
                 _class1Queue.Clear();
             }
 
-            // 复位后应答标识报文（兼容/专用范围），与 E8000 实测行为一致（两帧，COT=4/5）
+            // 7.4.1：复位 CU 后应答标识报文（TI=5，COT=4，INF=3）；会话首次复位另报启动/重启（COT=5，INF=4）
             if (station is not null)
             {
-                var ca = (byte)station.Address;
-                EnqueueClass1(Asdu103.Identification(ca, privateRange: false, station.CompatIdent));
-                EnqueueClass1(Asdu103.Identification(ca, privateRange: true, station.PrivateIdent));
+                EnqueueClass1(BuildIdentification(station, Cot103.ResetCu));
+                if (!_started)
+                {
+                    _started = true;
+                    EnqueueClass1(BuildIdentification(station, Cot103.Restart));
+                }
+
                 _log($"复位通信单元：地址 {station.Address}，标识已入 1 级队列");
             }
             else
             {
                 _log("复位通信单元（广播地址）");
             }
+        }
+
+        private void HandleResetFcb(Iec103StationModel? station)
+        {
+            if (station is null)
+            {
+                return;
+            }
+
+            // 7.4.1：复位 FCB 不清缓冲，应答标识报文（TI=5，COT=3，INF=2）排在队首
+            var ident = BuildIdentification(station, Cot103.ResetFcb).Encode();
+            lock (_queueLock)
+            {
+                var pending = _class1Queue.ToArray();
+                _class1Queue.Clear();
+                _class1Queue.Enqueue(ident);
+                foreach (var item in pending)
+                {
+                    _class1Queue.Enqueue(item);
+                }
+            }
+
+            _log($"复位帧计数位：地址 {station.Address}，标识已入 1 级队列队首");
+        }
+
+        private static Asdu103 BuildIdentification(Iec103StationModel station, byte cot)
+        {
+            return Asdu103.Identification(
+                (byte)station.Address, (byte)station.FunctionType, cot,
+                station.EffectiveCompatibilityLevel, station.CompatIdent, station.SoftwareIdBytes());
         }
 
         private async Task HandleUserData(Frame103 frame, Iec103StationModel? station)

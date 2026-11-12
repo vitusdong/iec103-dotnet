@@ -299,6 +299,16 @@ public sealed record Asdu103(byte TypeId, bool Sq, int Count, byte Cot, bool Neg
 
     public const byte InfPrivateIdent = 81;
 
+    /// <summary>系统功能信息序号（IEC 60870-5-103 表 8，TI=5）：2 复位 FCB（COT=3）、3 复位 CU（COT=4）、
+    /// 4 启动/重启（COT=5）、5 上电（COT=6）。FUN 为装置主功能类型。</summary>
+    public const byte InfResetFcb = 2;
+
+    public const byte InfResetCu = 3;
+
+    public const byte InfStartRestart = 4;
+
+    public const byte InfPowerOn = 5;
+
     public byte[] Encode()
     {
         var vsq = (byte)((Sq ? 0x80 : 0) | (Count & 0x7F));
@@ -367,8 +377,33 @@ public sealed record Asdu103(byte TypeId, bool Sq, int Count, byte Cot, bool Neg
     }
 
     /// <summary>
-    /// 标识报文（TI=5，FUN=255，INF=80 兼容范围 / 81 专用范围），数据为 8 字节 ASCII（空格填充）。
+    /// 标识报文（TI=5，IEC 60870-5-103 7.3.1.5）：数据 = 兼容级别 COL(1) + 8 字节 ASCII（空格填充）
+    /// + 4 字节软件标识（厂家自由使用），共 13 字节。
+    /// COT 3/4/5/6（复位 FCB/复位 CU/启动重启/上电）对应 INF 2/3/4/5（表 8）；FUN 为装置主功能类型。
     /// </summary>
+    public static Asdu103 Identification(byte ca, byte fun, byte cot, byte col, string ascii, byte[] software)
+    {
+        var inf = cot switch
+        {
+            Cot103.ResetFcb => InfResetFcb,
+            Cot103.ResetCu => InfResetCu,
+            Cot103.Restart => InfStartRestart,
+            Cot103.PowerOn => InfPowerOn,
+            _ => throw new ArgumentOutOfRangeException(nameof(cot), cot, "标识报文 COT 应为 3/4/5/6"),
+        };
+        var text = ascii.Length > 8 ? ascii[..8] : ascii.PadRight(8);
+        var data = new byte[13];
+        data[0] = col;
+        System.Text.Encoding.ASCII.GetBytes(text).CopyTo(data, 1);
+        software.AsSpan(0, Math.Min(4, software.Length)).CopyTo(data.AsSpan(9));
+        return new Asdu103(TypeId103.Identification, true, 1, cot, false, ca, fun, inf, data);
+    }
+
+    /// <summary>
+    /// 旧版标识报文（TI=5，FUN=255，INF=80 兼容范围 / 81 专用范围），数据仅 8 字节 ASCII（空格填充），
+    /// 不含兼容级别与软件标识，不符合 IEC 60870-5-103 7.3.1.5。
+    /// </summary>
+    [Obsolete("缺少 COL 与软件标识，INF 80/81 非表 8 序号；改用 Identification(ca, fun, cot, col, ascii, software)")]
     public static Asdu103 Identification(byte ca, bool privateRange, string ascii)
     {
         var text = ascii.Length > 8 ? ascii[..8] : ascii.PadRight(8);

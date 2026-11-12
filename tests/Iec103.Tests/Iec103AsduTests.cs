@@ -84,19 +84,19 @@ public class Iec103AsduTests
     }
 
     [Fact]
-    public void 标识报文_兼容与专用范围FUN_INF_COT区分()
+    public void 标识报文_COL加8字节ASCII加4字节软件标识()
     {
-        var compat = Asdu103.Identification(ca: 1, privateRange: false, "TEST-103");
-        Assert.Equal(TypeId103.Identification, compat.TypeId);
-        Assert.Equal(255, compat.Fun);
-        Assert.Equal(80, compat.Inf);
-        Assert.Equal(Cot103.ResetCu, compat.Cot);
-        Assert.Equal("TEST-103", System.Text.Encoding.ASCII.GetString(compat.Data));
+        // IEC 60870-5-103 7.3.1.5 与表 8：复位 CU → COT=4、INF=3，FUN 为装置功能类型
+        var ident = Asdu103.Identification(ca: 1, fun: 160, cot: Cot103.ResetCu, col: 2, "TEST-103", [1, 2, 3, 4]);
+        Assert.Equal(Hex("05 81 04 01 A0 03 02 54 45 53 54 2D 31 30 33 01 02 03 04"), ident.Encode());
 
-        var privateRange = Asdu103.Identification(ca: 1, privateRange: true, "PROT");
-        Assert.Equal(81, privateRange.Inf);
-        Assert.Equal(Cot103.Restart, privateRange.Cot);
-        Assert.Equal(8, privateRange.Data.Length);
+        Assert.Equal(Asdu103.InfResetFcb, Asdu103.Identification(1, 160, Cot103.ResetFcb, 2, "A", [0, 0, 0, 0]).Inf);
+        Assert.Equal(Asdu103.InfStartRestart, Asdu103.Identification(1, 160, Cot103.Restart, 2, "A", [0, 0, 0, 0]).Inf);
+        Assert.Equal(Asdu103.InfPowerOn, Asdu103.Identification(1, 160, Cot103.PowerOn, 2, "A", [0, 0, 0, 0]).Inf);
+        // 不足 8 字符空格填充
+        Assert.Equal("PROT    ", System.Text.Encoding.ASCII.GetString(
+            Asdu103.Identification(1, 160, Cot103.ResetCu, 3, "PROT", [0, 0, 0, 0]).Data, 1, 8));
+        Assert.Throws<ArgumentOutOfRangeException>(() => Asdu103.Identification(1, 160, Cot103.Spontaneous, 2, "A", [0, 0, 0, 0]));
     }
 
     [Fact]

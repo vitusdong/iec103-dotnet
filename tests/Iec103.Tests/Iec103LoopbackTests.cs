@@ -7,6 +7,9 @@ namespace Iec103.Tests;
 /// <summary>103 主从自环（TCP 承载 FT1.2）：复位→时间同步→总召唤→突发上送全流程。</summary>
 public class Iec103LoopbackTests
 {
+    private static byte[] Hex(string hex) =>
+        hex.Split(' ', StringSplitOptions.RemoveEmptyEntries).Select(b => Convert.ToByte(b, 16)).ToArray();
+
     private static int GetFreePort()
     {
         var listener = new TcpListener(IPAddress.Loopback, 0);
@@ -73,9 +76,12 @@ public class Iec103LoopbackTests
     }
 
     [Fact]
-    public void 复位链路后召唤1级可取到兼容与专用标识()
+    public void 复位链路后召唤1级可取到复位CU与启动重启标识()
     {
-        using var container = StartLoopback(BuildWorkspace());
+        var workspace = BuildWorkspace();
+        workspace.Stations[0].FunctionType = 160;
+        workspace.Stations[0].SoftwareId = "01020304";
+        using var container = StartLoopback(workspace);
         var client = container.Client;
 
         var ack = client.ResetLink(1);
@@ -83,19 +89,17 @@ public class Iec103LoopbackTests
         Assert.Equal((byte)SecondaryFunction103.Ack, LinkControl103.FromByte(ack.Control).Function);
         Assert.True(LinkControl103.FromByte(ack.Control).FcbOrAcd); // 队列有标识，ACD=1
 
+        // 7.4.1 与表 8：复位 CU → TI=5 COT=4 INF=3，FUN=装置功能类型，COL(无通用分类=2)+ASCII+软件标识
         var first = client.RequestClass1(1);
         Assert.Equal(Frame103Format.VariableLength, first.Format);
-        Asdu103.TryDecode(first.Asdu, out var compat, out _);
-        Assert.NotNull(compat);
-        Assert.Equal(TypeId103.Identification, compat!.TypeId);
-        Assert.Equal(255, compat.Fun);
-        Assert.Equal(80, compat.Inf);
-        Assert.Equal(Cot103.ResetCu, compat.Cot);
+        Assert.Equal(Hex("05 81 04 01 A0 03 02 54 45 53 54 2D 31 30 33 01 02 03 04"), first.Asdu);
 
+        // 会话首次复位另报启动/重启：COT=5 INF=4
         var second = client.RequestClass1(1);
-        Asdu103.TryDecode(second.Asdu, out var privateIdent, out _);
-        Assert.Equal(81, privateIdent!.Inf);
-        Assert.Equal(Cot103.Restart, privateIdent.Cot);
+        Asdu103.TryDecode(second.Asdu, out var restart, out _);
+        Assert.Equal(TypeId103.Identification, restart!.TypeId);
+        Assert.Equal(Asdu103.InfStartRestart, restart.Inf);
+        Assert.Equal(Cot103.Restart, restart.Cot);
 
         // 队列取空后应答“无所召唤的数据”
         var empty = client.RequestClass1(1);
@@ -123,6 +127,61 @@ public class Iec103LoopbackTests
         Assert.Equal(255, echo.Fun);
         Assert.Equal(Cot103.ClockSync, echo.Cot);
         Assert.Equal(time, Cp56Time2a103.Decode(echo.Data).ToDateTime());
+    }
+
+    [Fact]
+    public void 复位FCB应答标识排在1级队列队首()
+    {
+        // Iec103Client 无 RESET FCB 服务：以原始 TCP 帧驱动从站
+        using var server = new Iec103Server(BuildWorkspace(), GetFreePort());
+        server.Start();
+        using var tcp = new TcpClient("127.0.0.1", server.Port);
+        var stream = tcp.GetStream();
+        stream.ReadTimeout = 2000;
+        var parser = new FrameStreamParser103();
+        var buffer = new byte[512];
+        var pending = new Queue<Frame103>();
+        Frame103 Transact(byte[] request)
+        {
+            stream.Write(request);
+            while (pending.Count == 0)
+            {
+                foreach (var f in parser.Feed(buffer.AsSpan(0, stream.Read(buffer))))
+                {
+                    pending.Enqueue(f);
+                }
+            }
+
+            return pending.Dequeue();
+        }
+
+        var fcb = false;
+        Asdu103 Class1()
+        {
+            var frame = Transact(Frame103.EncodeFixed(LinkControl103.RequestClass1(fcb).ToByte(), 1));
+            fcb = !fcb;
+            Asdu103.TryDecode(frame.Asdu, out var asdu, out _);
+            return asdu!;
+        }
+
+        Transact(Frame103.EncodeFixed(LinkControl103.ResetCu().ToByte(), 1));
+        Class1();
+        Class1();
+        Transact(Frame103.EncodeVariable(LinkControl103.SendConfirmed(fcb).ToByte(), 1, Asdu103.GeneralInterrogation(1, 3).Encode()));
+        fcb = !fcb;
+
+        // RESET FCB（FC=7）：7.4.1 不清缓冲，标识（TI=5，COT=3，INF=2）先于已排队的总召唤数据
+        var ack = Transact(Frame103.EncodeFixed(LinkControl103.Primary(PrimaryFunction103.ResetFcb, fcb: false, fcv: false).ToByte(), 1));
+        Assert.Equal((byte)SecondaryFunction103.Ack, LinkControl103.FromByte(ack.Control).Function);
+        fcb = false;
+
+        var ident = Class1();
+        Assert.Equal(TypeId103.Identification, ident.TypeId);
+        Assert.Equal(Cot103.ResetFcb, ident.Cot);
+        Assert.Equal(Asdu103.InfResetFcb, ident.Inf);
+        var next = Class1();
+        Assert.Equal(TypeId103.TimeTaggedMessage, next.TypeId);
+        Assert.Equal(Cot103.GiStart, next.Cot);
     }
 
     [Fact]
