@@ -42,6 +42,18 @@ public static class Too103
     /// <summary>扰动数据传输失败（主站认可）。</summary>
     public const byte NegativeAck = 65;
 
+    /// <summary>通道传输成功（主站认可）。</summary>
+    public const byte ChannelPositiveAck = 66;
+
+    /// <summary>通道传输失败（主站认可）。</summary>
+    public const byte ChannelNegativeAck = 67;
+
+    /// <summary>标签传输成功（主站认可）。</summary>
+    public const byte TagsPositiveAck = 68;
+
+    /// <summary>标签传输失败（主站认可）。</summary>
+    public const byte TagsNegativeAck = 69;
+
     public static string Describe(byte too) => too switch
     {
         SelectFault => "选择故障",
@@ -63,6 +75,10 @@ public static class Too103
         EndTags + 2 => "标签传输结束（装置中止）",
         PositiveAck => "扰动数据传输成功（肯定）",
         NegativeAck => "扰动数据传输失败（否定）",
+        ChannelPositiveAck => "通道传输成功（肯定）",
+        ChannelNegativeAck => "通道传输失败（否定）",
+        TagsPositiveAck => "标签传输成功（肯定）",
+        TagsNegativeAck => "标签传输失败（否定）",
         _ => $"TOO {too}",
     };
 }
@@ -369,6 +385,13 @@ public static class DisturbanceAsdu
     {
         return new Asdu103(TypeId103.ChannelEnd, true, 1, Cot103.DisturbanceTransfer, false, ca, Asdu103.GlobalFun, 0,
             [too, Tov103.InstantaneousValues, (byte)(fan & 0xFF), (byte)(fan >> 8), acc]);
+    }
+
+    /// <summary>ASDU 28 标签传输准备就绪（7.3.1.14）：INF 与其后两字节不用（0）+ FAN(2)。</summary>
+    public static Asdu103 TagsReady(byte ca, int fan)
+    {
+        return new Asdu103(TypeId103.TagsReady, true, 1, Cot103.DisturbanceTransfer, false, ca, Asdu103.GlobalFun, 0,
+            [0, 0, (byte)(fan & 0xFF), (byte)(fan >> 8)]);
     }
 
     /// <summary>ASDU 29 带标签的通道扰动数据：FAN(2)+NOT(标签数)+TAP(标签位置)+NOT×(FUN+INF+DPI)。</summary>

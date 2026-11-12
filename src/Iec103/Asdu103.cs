@@ -42,6 +42,9 @@ public static class TypeId103
     /// <summary>扰动数据传输的命令（TOO/TOV/FAN/ACC）。</summary>
     public const byte DisturbanceCommand = 24;
 
+    /// <summary>标签传输准备就绪（FAN）。</summary>
+    public const byte TagsReady = 28;
+
     /// <summary>带标签的通道扰动数据（标签传输）。</summary>
     public const byte DisturbanceTags = 29;
 
@@ -73,6 +76,7 @@ public static class TypeId103
         GeneralCommand => "一般命令",
         DisturbanceCommand => "扰动数据传输的命令",
         DisturbanceAck => "扰动数据传输的认可",
+        TagsReady => "标签传输准备就绪",
         DisturbanceTags => "带标签的通道扰动数据",
         DisturbanceList => "被记录的扰动表",
         DisturbanceReady => "扰动数据传输准备就绪",

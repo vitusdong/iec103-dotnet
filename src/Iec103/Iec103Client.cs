@@ -350,12 +350,19 @@ public sealed class Iec103Client : IDisposable
 
     // —— 扰动数据传输 ——
 
-    /// <summary>取回一条扰动记录的全部通道采样（选择→就绪→认可→一次值→逐通道数据段→结束）。</summary>
+    /// <summary>取回一条扰动记录的全部通道采样与标签（7.4.7 流程）。</summary>
     public sealed record DisturbanceReadout(
         int Fan, int ChannelCount, int SampleCount, int IntervalUs, DateTime FaultTime,
-        IReadOnlyList<ChannelReadout> Channels);
+        IReadOnlyList<ChannelReadout> Channels)
+    {
+        /// <summary>标签（ASDU 29）：先为位置 0 的初始状态，再为各位置的状态变化。</summary>
+        public IReadOnlyList<DisturbanceTag> Tags { get; init; } = [];
+    }
 
     public sealed record ChannelReadout(byte Acc, float Primary, float Secondary, float Factor, short[] Samples);
+
+    /// <summary>扰动标签：位置 TAP + FUN/INF + DPI。</summary>
+    public sealed record DisturbanceTag(int Position, byte Fun, byte Inf, int Dpi);
 
     /// <summary>
     /// 请求被记录的扰动表（TOO=24）。从站按帧容量分帧（24 条/帧），
@@ -378,8 +385,11 @@ public sealed class Iec103Client : IDisposable
     }
 
     /// <summary>
-    /// 完整取回一条扰动：ASDU 24 选择（TOO=1）→ 就绪（TI=26）→ 认可（TI=25 TOO=64）
-    /// → 扰动数据（TOO=2，通道一次值 TI=27）→ 逐通道数据段（TOO=8，TI=30）至通道终止（TI=31）。
+    /// 完整取回一条扰动（IEC 60870-5-103 7.4.7，图 10）：
+    /// ASDU 24 选择（TOO=1）→ 就绪（TI=26）→ 请求扰动数据（TOO=2）→ 标签就绪（TI=28）
+    /// → 请求标签（TOO=16）→ 标签（TI=29）至标签结束（TI=31 TOO=38）→ 认可（TI=25 TOO=68）
+    /// → 装置逐通道提供（TI=27）：请求通道（TOO=8）→ 数据段（TI=30）至通道结束（TI=31 TOO=35）→ 认可（TI=25 TOO=66）
+    /// → 扰动数据结束（TI=31 TOO=32）→ 认可（TI=25 TOO=64）。
     /// </summary>
     public DisturbanceReadout ReadDisturbance(byte address, int fan)
     {
@@ -397,56 +407,85 @@ public sealed class Iec103Client : IDisposable
         var intervalUs = ready.Data[9] | (ready.Data[10] << 8);
         var faultTime = Cp32Time2a103.Decode(ready.Data.AsSpan(11, 4)).ToDateTime();
 
-        // 2. 认可就绪
-        SendConfirmed(address, DisturbanceAsdu.DisturbanceCommand(
-            TypeId103.DisturbanceAck, address, Too103.PositiveAck, fan, 0, Cot103.DisturbanceTransfer));
-
-        // 3. 请求扰动数据 → 每通道一次值（一次值帧固定 17 字节数据区）
+        // 2. 请求扰动数据 → 标签传输准备就绪
         SendConfirmed(address, DisturbanceAsdu.DisturbanceCommand(
             TypeId103.DisturbanceCommand, address, Too103.RequestDisturbanceData, fan, 0, Cot103.DisturbanceTransfer));
-        var ratings = new Dictionary<byte, (float Primary, float Secondary, float Factor)>();
-        for (var i = 0; i < channelCount; i++)
-        {
-            var rating = DrainFirst(address, TypeId103.ChannelRating);
-            if (rating.Data.Length < 17)
-            {
-                throw new FormatException($"通道一次值帧数据区不足 17 字节（{rating.Data.Length}），装置实现异常");
-            }
+        DrainFirst(address, TypeId103.TagsReady);
 
-            var acc = rating.Data[4];
-            ratings[acc] = (
-                BitConverter.ToSingle(rating.Data, 5),
-                BitConverter.ToSingle(rating.Data, 9),
-                BitConverter.ToSingle(rating.Data, 13));
+        // 3. 请求标签 → 标签至标签结束（TOO=38..40）→ 认可标签传输
+        SendConfirmed(address, DisturbanceAsdu.DisturbanceCommand(
+            TypeId103.DisturbanceCommand, address, Too103.RequestTags, fan, 0, Cot103.DisturbanceTransfer));
+        var tags = new List<DisturbanceTag>();
+        var tagsEnd = default(byte?);
+        foreach (var frame in DrainClass1(address, a => IsEnd(a, fan, Too103.EndTags)))
+        {
+            if (frame.TypeId == TypeId103.DisturbanceTags)
+            {
+                tags.AddRange(DecodeTags(frame));
+            }
+            else if (IsEnd(frame, fan, Too103.EndTags))
+            {
+                tagsEnd = frame.Data[0];
+            }
         }
 
-        // 4. 逐通道取数据段至通道终止（TOO=35 且 FAN/ACC 匹配才终止——
-        //    TI=31 亦被扰动结束（32）/标签结束（38）复用，宽匹配会提前截断）
-        var channels = new List<ChannelReadout>();
-        foreach (var acc in ratings.Keys)
+        if (tagsEnd is null)
         {
+            throw new TimeoutException($"FAN={fan} 标签传输未收到结束帧");
+        }
+
+        SendConfirmed(address, DisturbanceAsdu.DisturbanceCommand(
+            TypeId103.DisturbanceAck, address, tagsEnd == Too103.EndTags ? Too103.TagsPositiveAck : Too103.TagsNegativeAck,
+            fan, 0, Cot103.DisturbanceTransfer));
+
+        // 4. 装置逐通道提供（ASDU 27），直至扰动数据结束（ASDU 31 TOO=32..34）
+        var channels = new List<ChannelReadout>();
+        while (true)
+        {
+            var offer = DrainClass1(address, a => a.TypeId == TypeId103.ChannelRating || IsEnd(a, fan, Too103.EndDisturbance))
+                .LastOrDefault(a => a.TypeId == TypeId103.ChannelRating || IsEnd(a, fan, Too103.EndDisturbance))
+                ?? throw new TimeoutException($"FAN={fan} 未收到通道就绪（ASDU 27）或扰动数据结束（ASDU 31）");
+            if (offer.TypeId == TypeId103.ChannelEnd)
+            {
+                if (offer.Data[0] != Too103.EndDisturbance)
+                {
+                    throw new InvalidOperationException($"FAN={fan} 扰动传输被中止：{Too103.Describe(offer.Data[0])}");
+                }
+
+                break;
+            }
+
+            if (offer.Data.Length < 17)
+            {
+                throw new FormatException($"通道一次值帧数据区不足 17 字节（{offer.Data.Length}），装置实现异常");
+            }
+
+            var acc = offer.Data[4];
+            var primary = BitConverter.ToSingle(offer.Data, 5);
+            var secondary = BitConverter.ToSingle(offer.Data, 9);
+            var factor = BitConverter.ToSingle(offer.Data, 13);
+
+            // 逐通道取数据段至通道终止（TOO=35 且 FAN/ACC 匹配才终止——
+            // TI=31 亦被扰动结束（32）/标签结束（38）复用，宽匹配会提前截断）
             SendConfirmed(address, DisturbanceAsdu.DisturbanceCommand(
                 TypeId103.DisturbanceCommand, address, Too103.RequestChannel, fan, acc, Cot103.DisturbanceTransfer));
             var segments = new List<DisturbanceAsdu.ChannelDataSegment>();
             var endReached = false;
-            while (!endReached)
+            foreach (var frame in DrainClass1(address, a => IsChannelEnd(a, fan, acc)))
             {
-                foreach (var frame in DrainClass1(address, a => IsChannelEnd(a, fan, acc)))
+                if (frame.TypeId == TypeId103.ChannelData)
                 {
-                    if (frame.TypeId == TypeId103.ChannelData)
-                    {
-                        segments.Add(DisturbanceAsdu.DecodeChannelData(frame));
-                    }
-                    else if (IsChannelEnd(frame, fan, acc))
-                    {
-                        endReached = true;
-                    }
+                    segments.Add(DisturbanceAsdu.DecodeChannelData(frame));
                 }
+                else if (IsChannelEnd(frame, fan, acc))
+                {
+                    endReached = true;
+                }
+            }
 
-                if (!endReached)
-                {
-                    throw new TimeoutException($"FAN={fan} ACC={acc} 通道数据未收到终止帧");
-                }
+            if (!endReached)
+            {
+                throw new TimeoutException($"FAN={fan} ACC={acc} 通道数据未收到终止帧");
             }
 
             if (segments.Count == 0)
@@ -468,11 +507,42 @@ public sealed class Iec103Client : IDisposable
                 Array.Copy(segment.Values, 0, samples, startIndex, segment.Values.Length);
             }
 
-            var (primary, secondary, factor) = ratings[acc];
             channels.Add(new ChannelReadout(acc, primary, secondary, factor, samples));
+
+            // 认可通道传输
+            SendConfirmed(address, DisturbanceAsdu.DisturbanceCommand(
+                TypeId103.DisturbanceAck, address, Too103.ChannelPositiveAck, fan, acc, Cot103.DisturbanceTransfer));
         }
 
-        return new DisturbanceReadout(fan, channelCount, sampleCount, intervalUs, faultTime, channels);
+        // 5. 认可全部扰动数据
+        SendConfirmed(address, DisturbanceAsdu.DisturbanceCommand(
+            TypeId103.DisturbanceAck, address, Too103.PositiveAck, fan, 0, Cot103.DisturbanceTransfer));
+
+        return new DisturbanceReadout(fan, channelCount, sampleCount, intervalUs, faultTime, channels) { Tags = tags };
+    }
+
+    /// <summary>传输结束判定：TI=31、TOO 属于 first..first+2（无中止/主站中止/装置中止）且 FAN 匹配。</summary>
+    private static bool IsEnd(Asdu103 asdu, int fan, byte first)
+    {
+        return asdu.TypeId == TypeId103.ChannelEnd &&
+            asdu.Data.Length >= 5 &&
+            asdu.Data[0] >= first && asdu.Data[0] <= first + 2 &&
+            (asdu.Data[2] | (asdu.Data[3] << 8)) == fan;
+    }
+
+    /// <summary>解码 ASDU 29 标签：FAN(2)+NOT(1)+TAP(2)+NOT×(FUN+INF+DPI)。</summary>
+    private static IEnumerable<DisturbanceTag> DecodeTags(Asdu103 asdu)
+    {
+        if (asdu.Data.Length < 5)
+        {
+            yield break;
+        }
+
+        var position = asdu.Data[3] | (asdu.Data[4] << 8);
+        for (var offset = 5; offset + 3 <= asdu.Data.Length; offset += 3)
+        {
+            yield return new DisturbanceTag(position, asdu.Data[offset], asdu.Data[offset + 1], asdu.Data[offset + 2] & 0x03);
+        }
     }
 
     /// <summary>通道终止判定：TI=31 且 TOO=35（通道结束）且 FAN/ACC 匹配本通道。</summary>

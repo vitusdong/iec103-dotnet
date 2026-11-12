@@ -149,6 +149,35 @@ public class Iec103DisturbanceTests
     }
 
     [Fact]
+    public void 扰动自环_按7_4_7流程先标签后逐通道并逐个认可()
+    {
+        var station = BuildStation();
+        station.Points = [new Iec103PointModel { Fun = 160, Inf = 84, Dpi = 2 }];
+        using var loopback = new Loopback(station).Start();
+        var client = loopback.Client;
+        client.ResetLink(1);
+        client.RequestClass1(1);
+        client.RequestClass1(1);
+
+        var before = client.GetReceivedSnapshot().Count;
+        var readout = client.ReadDisturbance(1, 7);
+        Assert.Equal([1, 2, 4], readout.Channels.Select(c => (int)c.Acc));
+        var tag = Assert.Single(readout.Tags);
+        Assert.Equal(new Iec103Client.DisturbanceTag(0, 160, 84, 2), tag);
+
+        // 监视方向的顺序（图 10）：26 → 28 → 29 → 31(38) → 每通道 27 → 30… → 31(35) → 31(32) → 认可后更新的 23
+        var received = client.GetReceivedSnapshot().Skip(before).Select(r => r.Asdu)
+            .Where(a => a.TypeId != TypeId103.ChannelData)
+            .Select(a => a.TypeId == TypeId103.ChannelEnd ? $"31/{a.Data[0]}" : a.TypeId == TypeId103.ChannelRating ? $"27/{a.Data[4]}" : $"{a.TypeId}")
+            .ToList();
+        Assert.Equal(["26", "28", "29", "31/38", "27/1", "31/35", "27/2", "31/35", "27/4", "31/35", "31/32"], received);
+
+        // TOO=64 认可后装置上送更新的扰动表
+        var list = client.DrainClass1(1, a => a.TypeId == TypeId103.DisturbanceList);
+        Assert.Equal(TypeId103.DisturbanceList, list.Last().TypeId);
+    }
+
+    [Fact]
     public void 扰动自环_扰动表FUN为装置功能类型且SQ为0()
     {
         var station = BuildStation();

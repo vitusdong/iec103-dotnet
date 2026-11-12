@@ -89,13 +89,16 @@
 读全目录（GIN 0000+KOD 描述）→ 从站分帧回 ASDU 10（NGD 后续标志续传，COT=42）；单条读（描述/实际值/量程）；写值（TI=10 COT=40）→ 确认（COT=40/41 + GRC 回复码：0 认可/2 GIN 不存在/7 只读）。描述文本 OS8ASCII 以 **GB18030** 编码（国内装置通行 GB2312 中文）。
 
 ### 扰动传输（TOO 驱动）
+IEC 60870-5-103 7.4.7（图 10）：
 ```
 主站 ASDU24 TOO=24 ─→ ASDU23 扰动表
 主站 ASDU24 TOO=1(FAN) ─→ ASDU26 就绪（NOC/NOE/间隔/时刻）
-主站 ASDU25 TOO=64 ─→ （认可）
-主站 ASDU24 TOO=2 ─→ ASDU27 × 每通道（一次值/二次值/因数）
+主站 ASDU24 TOO=2 ─→ ASDU28 标签就绪
+主站 ASDU24 TOO=16 ─→ ASDU29 标签 + ASDU31 TOO=38 标签结束
+主站 ASDU25 TOO=68 ─→ ASDU27 第一个通道（一次值/二次值/因数，ACC 升序）
 主站 ASDU24 TOO=8(ACC) ─→ ASDU30 数据段（分帧）+ ASDU31 TOO=35 通道结束
-全部通道完成 ─→ ASDU31 TOO=32 扰动结束
+主站 ASDU25 TOO=66(ACC) ─→ 下一通道 ASDU27；最后一个通道之后 ASDU31 TOO=32 扰动结束
+主站 ASDU25 TOO=64 ─→ ASDU23 更新的扰动表
 ```
 
 ## 6. 对拍认知（vendored ArIEC103 互操作）

@@ -266,8 +266,6 @@ public sealed class Iec103Server : IDisposable
         /// <summary>装置当前时钟：校时基准 + 实际流逝时间（校时后事件时戳不再用 PC 墙钟）。</summary>
         private DateTime StationNow => _stationClock + (DateTime.Now - _stationClockSetAt);
 
-        /// <summary>已传完的扰动通道（FAN → ACC 集合），齐全后发送扰动传输结束。</summary>
-        private readonly Dictionary<int, HashSet<byte>> _transferredChannels = [];
 
         /// <summary>2 级循环测量队列（一轮快照）。</summary>
         private readonly Queue<byte[]> _class2Queue = new();
@@ -507,7 +505,7 @@ public sealed class Iec103Server : IDisposable
                 TypeId103.GenericCommand when asdu.Cot == Cot103.GenericRead => HandleGenericRead(asdu, station),
                 TypeId103.GenericData when asdu.Cot == Cot103.GenericWrite => HandleGenericWrite(asdu, station),
                 TypeId103.DisturbanceCommand when asdu.Cot == Cot103.DisturbanceTransfer => HandleDisturbanceCommand(asdu, station),
-                TypeId103.DisturbanceAck when asdu.Cot == Cot103.DisturbanceTransfer => HandleDisturbanceAck(asdu),
+                TypeId103.DisturbanceAck when asdu.Cot == Cot103.DisturbanceTransfer => HandleDisturbanceAck(asdu, station),
                 // COT 放宽 20/11/12：GPGate 等网关下发一般命令用 COT=12（老后端真机字节流），仅认 20 会静默丢弃
                 TypeId103.GeneralCommand when asdu.Cot is Cot103.CommandAck or Cot103.RemoteOperation or Cot103.LocalOperation => HandleGeneralCommand(asdu, station),
                 _ => false,
@@ -740,16 +738,13 @@ public sealed class Iec103Server : IDisposable
                 case Too103.SelectFault when record is not null:
                     EnqueueClass1(DisturbanceAsdu.TransferReady(ca, too, record, disturbanceCount));
                     _log($"选择故障 FAN={fan}：{record.Channels.Count} 通道 × {record.TotalSamples} 点，间隔 {record.SampleIntervalUs}µs");
-                    _transferredChannels[fan] = [];
                     break;
 
                 case Too103.RequestDisturbanceData when record is not null:
-                    foreach (var channel in record.Channels)
-                    {
-                        EnqueueClass1(DisturbanceAsdu.ChannelRating(ca, too, fan, channel));
-                    }
-
-                    _log($"扰动数据请求 FAN={fan} → {record.Channels.Count} 条通道一次值");
+                    // 7.4.7（图 10）：请求扰动数据 → 标签传输准备就绪（ASDU 28）；
+                    // 标签认可（ASDU 25 TOO=68/69）后再逐通道以 ASDU 27 提供
+                    EnqueueClass1(DisturbanceAsdu.TagsReady(ca, fan));
+                    _log($"扰动数据请求 FAN={fan} → 标签传输准备就绪");
                     break;
 
                 case Too103.RequestChannel when record is not null:
@@ -770,17 +765,6 @@ public sealed class Iec103Server : IDisposable
 
                     EnqueueClass1(DisturbanceAsdu.ChannelEnd(ca, Too103.EndChannel, fan, acc));
                     _log($"通道数据 FAN={fan} ACC={acc}：{samples.Length} 点（{Ceil(samples.Length, chunkSize)} 段）+ 通道终止");
-
-                    var transferred = _transferredChannels.TryGetValue(fan, out var set)
-                        ? set
-                        : _transferredChannels[fan] = [];
-                    _ = transferred.Add(acc);
-                    if (transferred.Count >= record.Channels.Count)
-                    {
-                        EnqueueClass1(DisturbanceAsdu.ChannelEnd(ca, Too103.EndDisturbance, fan, Acc103.Global));
-                        _log($"FAN={fan} 全部通道传完 → 扰动传输结束");
-                    }
-
                     break;
 
                 case Too103.RequestTags when record is not null:
@@ -802,7 +786,7 @@ public sealed class Iec103Server : IDisposable
             return true;
         }
 
-        private bool HandleDisturbanceAck(Asdu103 asdu)
+        private bool HandleDisturbanceAck(Asdu103 asdu, Iec103StationModel? station)
         {
             // TOO+TOV+FAN(2)+ACC 共 5 字节；短载荷拒绝而非异常终止会话
             if (asdu.Data.Length < 5)
@@ -811,9 +795,62 @@ public sealed class Iec103Server : IDisposable
                 return true;
             }
 
-            var (too, _, fan, _) = DisturbanceAsdu.DecodeCommand(asdu);
+            var (too, _, fan, acc) = DisturbanceAsdu.DecodeCommand(asdu);
             _log($"扰动认可：FAN={fan} {Too103.Describe(too)}");
+            if (station is null)
+            {
+                return true;
+            }
+
+            var ca = (byte)station.Address;
+            List<DisturbanceRecord103Model> disturbances;
+            lock (station.DisturbanceGate)
+            {
+                disturbances = [.. station.Disturbances];
+            }
+
+            var record = disturbances.FirstOrDefault(r => r.Fan == fan);
+            if (record is null)
+            {
+                return true;
+            }
+
+            // 7.4.7（图 10）：通道按 ACC 升序逐个提供；每个认可后提供下一通道，最后一个之后扰动传输结束
+            var channels = record.Channels.OrderBy(c => c.Acc).ToList();
+            switch (too)
+            {
+                case Too103.TagsPositiveAck:
+                case Too103.TagsNegativeAck:
+                    OfferChannelOrEnd(ca, fan, channels.FirstOrDefault());
+                    break;
+
+                case Too103.ChannelPositiveAck:
+                case Too103.ChannelNegativeAck:
+                    OfferChannelOrEnd(ca, fan, channels.FirstOrDefault(c => c.Acc > acc));
+                    break;
+
+                case Too103.PositiveAck:
+                case Too103.NegativeAck:
+                    // 传输完成后上送更新的扰动表（ASDU 23）
+                    var fun = station.FunctionType != Asdu103.GlobalFun ? (byte)station.FunctionType : asdu.Fun;
+                    EnqueueClass1(DisturbanceAsdu.DisturbanceList(ca, disturbances.Take(24).ToList(), fun));
+                    break;
+            }
+
             return true;
+        }
+
+        private void OfferChannelOrEnd(byte ca, int fan, DisturbanceChannel103Model? channel)
+        {
+            if (channel is not null)
+            {
+                EnqueueClass1(DisturbanceAsdu.ChannelRating(ca, Too103.RequestDisturbanceData, fan, channel));
+                _log($"FAN={fan} 提供通道 ACC={channel.Acc}（ASDU 27）");
+                return;
+            }
+
+            EnqueueClass1(DisturbanceAsdu.ChannelEnd(ca, Too103.EndDisturbance, fan, Acc103.Global));
+            _log($"FAN={fan} 全部通道传完 → 扰动传输结束");
         }
 
         private static int Ceil(int value, int divisor) => (value + divisor - 1) / divisor;
