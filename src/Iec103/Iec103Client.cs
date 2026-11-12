@@ -292,11 +292,15 @@ public sealed class Iec103Client : IDisposable
         return CollectGenericSets(address, rii);
     }
 
-    /// <summary>写条目实际值（TI=10，COT=40），返回从站写确认数据集（含回复码）。</summary>
+    /// <summary>
+    /// 写条目实际值（TI=10，COT=40，INF=250 带执行的写条目），返回从站写确认数据集（含回复码）。
+    /// 肯定确认（COT=40）按 7.4.8.6.3 可不带数据集，此时返回该 GIN 的回复码 0（认可）。
+    /// </summary>
     public GenericDataSet103 WriteGenericValue(byte address, GenericDataSet103 valueSet)
     {
         var rii = NextRii();
-        SendConfirmed(address, Asdu103.GenericDataAsdu(address, rii, continuation: false, Cot103.GenericWrite, [valueSet]));
+        SendConfirmed(address, Asdu103.GenericDataAsdu(
+            address, rii, continuation: false, Cot103.GenericWrite, [valueSet], Asdu103.InfGenericWriteWithExecution));
 
         // 队列中可能残留复位标识等无关帧，过滤后取写确认
         var ack = DrainClass1(address, asdu =>
@@ -306,6 +310,12 @@ public sealed class Iec103Client : IDisposable
         if (ack is null)
         {
             throw new TimeoutException("未收到通用分类写确认");
+        }
+
+        if (ack.Cot == Cot103.GenericWriteAckPositive && (ack.Data.Length < 2 || Ngd103.Decode(ack.Data[1]).Count == 0))
+        {
+            // 7.4.8.6.3：全部写成功时 COT=40 不需其他数据（NGD 数目 0）
+            return GenericDataSet103.ReplyCode(valueSet.Gin, valueSet.Kod, Grc103.Acknowledge);
         }
 
         GenericDataSet103.TryDecode(ack.Data.AsSpan(2), out var set, out _);

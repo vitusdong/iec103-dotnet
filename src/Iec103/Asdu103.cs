@@ -433,6 +433,12 @@ public sealed record Asdu103(byte TypeId, bool Sq, int Count, byte Cot, bool Neg
     /// <summary>通用分类 ASDU 的功能类型（GEN）。</summary>
     public const byte GenericFun = 254;
 
+    /// <summary>通用分类命令信息序号（IEC 60870-5-103 表 18）：244 读单个条目的值或属性（TI=21，COT=42）。</summary>
+    public const byte InfGenericReadEntry = 244;
+
+    /// <summary>通用分类命令信息序号（表 18）：250 带执行的写条目（TI=10，COT=40）。</summary>
+    public const byte InfGenericWriteWithExecution = 250;
+
     /// <summary>读全目录命令（TI=21，COT=42）：RII + NOG=1 + GIN 0000 + KOD=描述。</summary>
     public static Asdu103 GenericReadAll(byte ca, byte rii)
     {
@@ -444,7 +450,7 @@ public sealed record Asdu103(byte TypeId, bool Sq, int Count, byte Cot, bool Neg
         return new Asdu103(TypeId103.GenericCommand, true, 1, Cot103.GenericRead, false, ca, GenericFun, 0, data);
     }
 
-    /// <summary>读指定条目命令（TI=21，COT=42）：RII + NOG + 每条 GIN/KOD。</summary>
+    /// <summary>读指定条目命令（TI=21，COT=42，INF=244 读单个条目的值或属性）：RII + NOG + 每条 GIN/KOD。</summary>
     public static Asdu103 GenericRead(byte ca, byte rii, params (Gin103 Gin, byte Kod)[] entries)
     {
         var data = new byte[2 + entries.Length * 3];
@@ -458,14 +464,15 @@ public sealed record Asdu103(byte TypeId, bool Sq, int Count, byte Cot, bool Neg
             offset += 3;
         }
 
-        return new Asdu103(TypeId103.GenericCommand, true, 1, Cot103.GenericRead, false, ca, GenericFun, 0, data);
+        return new Asdu103(TypeId103.GenericCommand, true, 1, Cot103.GenericRead, false, ca, GenericFun, InfGenericReadEntry, data);
     }
 
     /// <summary>
     /// 通用分类数据（TI=10）：数据 = RII + NGD + 数据集序列。
     /// COT 语义：40 主站写命令 / 42 读响应（有效）/ 43 读响应（无效）。
+    /// INF 为表 18 的命令序号（主站写命令用 250），应答回带命令的 INF。
     /// </summary>
-    public static Asdu103 GenericDataAsdu(byte ca, byte rii, bool continuation, byte cot, IReadOnlyList<GenericDataSet103> sets)
+    public static Asdu103 GenericDataAsdu(byte ca, byte rii, bool continuation, byte cot, IReadOnlyList<GenericDataSet103> sets, byte inf = 0)
     {
         var data = new byte[2 + sets.Sum(s => s.EncodedSize)];
         data[0] = rii;
@@ -477,7 +484,7 @@ public sealed record Asdu103(byte TypeId, bool Sq, int Count, byte Cot, bool Neg
             offset += set.EncodedSize;
         }
 
-        return new Asdu103(TypeId103.GenericData, true, 1, cot, false, ca, GenericFun, 0, data);
+        return new Asdu103(TypeId103.GenericData, true, 1, cot, false, ca, GenericFun, inf, data);
     }
 
     /// <summary>

@@ -20,8 +20,18 @@ public class Iec103GenericTests
     [Fact]
     public void 读单条命令编码()
     {
+        // 表 18：INF=244 读单个条目的值或属性
         var asdu = Asdu103.GenericRead(1, rii: 5, (new Gin103(1, 2), Kod103.ActualValue));
-        Assert.Equal(Hex("15 81 2A 01 FE 00 05 01 01 02 01"), asdu.Encode());
+        Assert.Equal(Hex("15 81 2A 01 FE F4 05 01 01 02 01"), asdu.Encode());
+    }
+
+    [Fact]
+    public void 写条目命令编码_INF250()
+    {
+        // 表 18：INF=250 带执行的写条目（TI=10，COT=40）
+        var set = GenericDataSet103.Unsigned(new Gin103(1, 3), Kod103.ActualValue, 450, 2);
+        var asdu = Asdu103.GenericDataAsdu(1, rii: 1, continuation: false, Cot103.GenericWrite, [set], Asdu103.InfGenericWriteWithExecution);
+        Assert.Equal(Hex("0A 81 28 01 FE FA 01 01 01 03 01 03 02 01 C2 01"), asdu.Encode());
     }
 
     [Fact]
