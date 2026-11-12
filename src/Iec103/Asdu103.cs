@@ -539,7 +539,11 @@ public sealed record Asdu103(byte TypeId, bool Sq, int Count, byte Cot, bool Neg
     {
         return (asdu.Data[1] | (asdu.Data[2] << 8), asdu.Data[3] | (asdu.Data[4] << 8));
     }
-    public static Asdu103 GenericWriteAck(byte ca, byte rii, Gin103 gin, byte kod, byte grc, bool negative)
+    /// <summary>
+    /// 通用分类写确认（TI=10，COT=40/41）：一个 GIN + 回复码数据集，INF 回带写命令的 INF。
+    /// 全部写成功的肯定确认按 7.4.8.6.3 不需数据集，可用 GenericDataAsdu 发送空数据集序列。
+    /// </summary>
+    public static Asdu103 GenericWriteAck(byte ca, byte rii, Gin103 gin, byte kod, byte grc, bool negative, byte inf = 0)
     {
         var set = GenericDataSet103.ReplyCode(gin, kod, grc);
         var data = new byte[2 + set.EncodedSize];
@@ -547,6 +551,6 @@ public sealed record Asdu103(byte TypeId, bool Sq, int Count, byte Cot, bool Neg
         data[1] = Ngd103.Encode(1, false);
         set.Encode().CopyTo(data, 2);
         var cot = negative ? Cot103.GenericWriteAckNegative : Cot103.GenericWriteAckPositive;
-        return new Asdu103(TypeId103.GenericData, true, 1, cot, false, ca, GenericFun, 0, data);
+        return new Asdu103(TypeId103.GenericData, true, 1, cot, false, ca, GenericFun, inf, data);
     }
 }

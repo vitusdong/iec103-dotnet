@@ -629,7 +629,8 @@ public sealed class Iec103Server : IDisposable
             }
 
             var cot = allValid ? Cot103.GenericReadValid : Cot103.GenericReadInvalid;
-            foreach (var response in ChunkGeneric(ca, rii, cot, sets))
+            // 7.4.8.6.2（图 16）：应答回带命令的 INF
+            foreach (var response in ChunkGeneric(ca, rii, cot, sets, asdu.Inf))
             {
                 EnqueueClass1(response);
             }
@@ -665,21 +666,24 @@ public sealed class Iec103Server : IDisposable
             var entry = station.GenericEntries.FirstOrDefault(e => e.Group == gin.Group && e.Entry == gin.Entry);
             if (entry is null)
             {
-                EnqueueClass1(Asdu103.GenericWriteAck(ca, rii, gin, set.Kod, Grc103.UnknownGin, negative: true));
+                EnqueueClass1(Asdu103.GenericWriteAck(ca, rii, gin, set.Kod, Grc103.UnknownGin, negative: true, asdu.Inf));
                 _log($"通用分类写：GIN {gin} 不存在，回否定确认");
                 return true;
             }
 
             if (entry.ReadOnly)
             {
-                EnqueueClass1(Asdu103.GenericWriteAck(ca, rii, gin, set.Kod, Grc103.ReadOnlyEntry, negative: true));
+                EnqueueClass1(Asdu103.GenericWriteAck(ca, rii, gin, set.Kod, Grc103.ReadOnlyEntry, negative: true, asdu.Inf));
                 _log($"通用分类写：GIN {gin} 只读，回否定确认");
                 return true;
             }
 
             var applied = ApplyWriteValue(entry, set);
-            var grc = applied ? Grc103.Acknowledge : Grc103.NotAcknowledged;
-            EnqueueClass1(Asdu103.GenericWriteAck(ca, rii, gin, set.Kod, grc, negative: !applied));
+            // 7.4.8.6.3（图 17）：应答回带命令的 INF；全部成功 COT=40 不带数据集（NGD 数目 0），
+            // 失败 COT=41 带 GIN 与回复码
+            EnqueueClass1(applied
+                ? Asdu103.GenericDataAsdu(ca, rii, continuation: false, Cot103.GenericWriteAckPositive, [], asdu.Inf)
+                : Asdu103.GenericWriteAck(ca, rii, gin, set.Kod, Grc103.NotAcknowledged, negative: true, asdu.Inf));
             _log($"通用分类写：GIN {gin}={set.DecodeValue() ?? "?"} → {(applied ? "认可" : "否定（类型不符）")}");
             return true;
         }
@@ -916,7 +920,7 @@ public sealed class Iec103Server : IDisposable
         }
 
         /// <summary>数据集序列按 FT1.2 单帧字节预算分帧；除最后一帧外 NGD 后续标志置位。</summary>
-        private static IEnumerable<Asdu103> ChunkGeneric(byte ca, byte rii, byte cot, List<GenericDataSet103> sets)
+        private static IEnumerable<Asdu103> ChunkGeneric(byte ca, byte rii, byte cot, List<GenericDataSet103> sets, byte inf)
         {
             var budget = Frame103.MaxAsduLength - 8 - 2; // ASDU 头 8 字节 + RII + NGD
             var current = new List<GenericDataSet103>();
@@ -925,7 +929,7 @@ public sealed class Iec103Server : IDisposable
             {
                 if (current.Count > 0 && used + set.EncodedSize > budget)
                 {
-                    yield return Asdu103.GenericDataAsdu(ca, rii, continuation: true, cot, current);
+                    yield return Asdu103.GenericDataAsdu(ca, rii, continuation: true, cot, current, inf);
                     current = [];
                     used = 0;
                 }
@@ -934,7 +938,7 @@ public sealed class Iec103Server : IDisposable
                 used += set.EncodedSize;
             }
 
-            yield return Asdu103.GenericDataAsdu(ca, rii, continuation: false, cot, current);
+            yield return Asdu103.GenericDataAsdu(ca, rii, continuation: false, cot, current, inf);
         }
 
         private async Task RespondFromClass1(byte address)
